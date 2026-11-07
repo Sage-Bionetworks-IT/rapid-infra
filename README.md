@@ -41,7 +41,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 
 | Stack | Purpose |
 |---|---|
-| `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
+| `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
 | `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
 
 Adding a provider is a config change: add a `BUCKETS` entry to `config/{env}.yaml`.
@@ -72,6 +72,24 @@ after the deploy:
 ```console
 SYNAPSE_AUTH_TOKEN=<PAT> python tools/setup_synapse_projects.py --env sandbox [--bucket ID]
 ```
+
+### Alarms (and Vanta)
+
+Every alarm emails `ALARM_EMAIL` through the pipeline's SNS topic. The bucket stacks import it
+from the pipeline; the pipeline imports nothing from them, so bucket stacks still come and go.
+Some exist for Vanta's AWS tests, which read an alarm's top-level `MetricName` and dimensions
+(so an alarm's metric must have no `label`, which would make it a math alarm):
+
+- An `Errors` alarm on every Lambda function, CDK's own included (`src/alarms.py`
+  `lambda_error_alarms`, called last in each stack, so a new function needs no code change).
+  It fires at `LAMBDA_ERROR_ALARMS.errors_per_5_minutes` (1), so a Sync error that Step
+  Functions retries successfully can still email. Vanta: "Serverless function error rate
+  monitored (AWS)"
+- The sidecar rule's DLQ: one alarm when a message lands, another if it is still there an hour
+  later. A new queue needs an `ApproximateAgeOfOldestMessage` alarm too (`dlq_age_alarm`, at
+  most 5000 s). Vanta: "Messaging queue message age monitored"
+- `DATA_STORE_TAGS` (`VantaContainsUserData`, `VantaUserDataStored`) classify the provider
+  buckets. S3 tag values allow only letters, digits, spaces and `+ - = . _ : / @`
 
 ## Configuration
 

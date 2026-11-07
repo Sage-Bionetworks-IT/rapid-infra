@@ -17,6 +17,8 @@ from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
+from src.alarms import dlq_age_alarm, lambda_error_alarms
+
 _RUNTIME = lambda_.Runtime.PYTHON_3_13
 # synapseclient pulls in compiled wheels; build and run on one architecture
 _ARCH = lambda_.Architecture.ARM_64
@@ -54,6 +56,8 @@ class SyncPipelineStack(cdk.Stack):
         buckets: list,
         sync_config: dict,
         alarm_email: str = "",
+        # An Errors alarm on each Lambda fires at this many errors in 5 minutes (Vanta)
+        lambda_errors_per_5_minutes: int = 1,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -297,7 +301,9 @@ class SyncPipelineStack(cdk.Stack):
         )
 
         # -------------------
-        # Alarms: an email per failed execution, and one if EventBridge can't start any
+        # Alarms: an email per failed execution, one if EventBridge can't start any (and
+        # again if that event is still in the DLQ an hour later), and one per Lambda erroring.
+        # The bucket stacks' alarms email this topic too.
         # -------------------
         self.alarm_topic = sns.Topic(self, "AlarmTopic", enforce_ssl=True)
         if alarm_email:
@@ -342,6 +348,13 @@ class SyncPipelineStack(cdk.Stack):
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description="EventBridge failed to start an S3 → Synapse sync execution",
         ).add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
+        dlq_age_alarm(
+            self, "SidecarRuleDLQAgeAlarm", self.rule_dlq, "A sidecar event", self.alarm_topic
+        )
+
+        # Last, so every Lambda in the stack is covered. A Sync error Step Functions retries
+        # still counts, so a transient Synapse error can email before the retry succeeds.
+        lambda_error_alarms(self, lambda_errors_per_5_minutes, self.alarm_topic)
 
         cdk.CfnOutput(self, "SyncStateMachineArn", value=self.state_machine.state_machine_arn)
         cdk.CfnOutput(self, "SynapsePatSecretArn", value=self.pat_secret.secret_arn)
