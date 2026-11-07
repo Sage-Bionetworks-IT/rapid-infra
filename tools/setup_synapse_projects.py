@@ -123,7 +123,17 @@ def setup_project(syn, bucket: dict, folders: list) -> dict:
         f"✓ {bucket['id']}: s3://{bucket_name} → {project_id} ('{name}'), upload location "
         f"{location_id}; STS folder {sts_folder} {sts_folder_id} (location {sts_location_id})"
     )
+    print(_contributor_help(sts_folder_id, bucket_name))
     return result
+
+
+def _contributor_help(sts_folder_id: str, bucket: str) -> str:
+    return f"""
+  Send the provider (who needs edit access to {sts_folder_id}):
+    python tools/contribute.py --sts-folder {sts_folder_id} <local-dir> <s3-folder>
+  It uploads <local-dir> to s3://{bucket}/<s3-folder>/ with read-write STS credentials, then
+  writes <s3-folder>/sidecar.json, which indexes the folder into the project at <s3-folder>/.
+"""
 
 
 def ensure_project(syn, name: str) -> str:
