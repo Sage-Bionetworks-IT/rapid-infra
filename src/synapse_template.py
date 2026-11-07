@@ -8,6 +8,7 @@ a Terraform resource takes another's output.
     projects:
       - name: RAPID dev provider a   # the Synapse project (names are global in Synapse)
         bucket: $ref.BucketName.rapid-dev-provider-a  # a BUCKETS[].bucket_name's stack
+        sts_folder: sts              # optional: the project's STS shim folder (default "sts")
         acl:                         # optional: the project's sharing settings, exactly
           - principal_id: 3629180    # a Synapse team or user ID
             permission: edit         # a PERMISSIONS level
@@ -84,6 +85,11 @@ def find_refs(value: Any, where: str) -> Iterator[Tuple[str, Ref]]:
             yield where, ref
 
 
+# The STS "shim" folder in each provider's project: empty, it only vends read-write STS
+# credentials for the whole bucket. Files are indexed at the project root, mirroring S3.
+DEFAULT_STS_FOLDER = "sts"
+
+
 def load_template(path) -> Dict[str, Any]:
     """Load and validate a Synapse template; an empty file has no projects."""
     with open(Path(path)) as f:
@@ -111,6 +117,9 @@ def validate_template(template: Dict[str, Any]) -> None:
             raise ValueError(
                 f"{where}.bucket '{bucket}' must be $ref.BucketName.<BUCKETS bucket_name>"
             )
+        folder = project.get("sts_folder", DEFAULT_STS_FOLDER)
+        if not isinstance(folder, str) or not folder.strip() or not _SYNAPSE_NAME.match(folder):
+            raise ValueError(f"{where}.sts_folder must be a folder name, got '{folder}'")
         for field, value in (("name", name), ("bucket", bucket_ref.bucket)):
             if value in seen[field]:
                 # One project per bucket: each provider's data indexes into its own project
