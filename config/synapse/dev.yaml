@@ -6,6 +6,9 @@ projects:
   # global in Synapse; renaming one here makes a new project, so rename it in Synapse first
   - name: RAPID dev provider example
     bucket: $ref.BucketName.rapid-dev-provider-example
+    # Optional, default "sts". The empty folder in the project that gives contributors
+    # read-write STS credentials for the bucket (files are indexed at the project root)
+    sts_folder: sts
     # The project's sharing settings: Synapse teams or users, each with a permission level of
     # view, download, edit, edit_delete or admin. The setup makes Synapse match this list:
     # anyone not in it (shared by hand, public access) is removed, except the service account.

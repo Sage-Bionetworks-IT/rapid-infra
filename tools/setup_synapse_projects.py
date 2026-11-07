@@ -15,10 +15,13 @@ idempotently, as the sync service account:
 2. Its upload destination: a non-STS external S3 location on the bucket, where indexed files
    live, set as the project's ONLY upload location (replacing any other, including Synapse's
    default storage). Synapse checks the bucket's owner.txt lists the service account.
-3. Its sharing settings, made to match the project's acl, as CloudFormation does a stack's
+3. The STS "shim" folder (the project's sts_folder, default "sts"): empty, with an STS location
+   on the whole bucket, from which contributors with edit access get read-write STS credentials.
+   Logs the contribute.py command to send the provider.
+4. Its sharing settings, made to match the project's acl, as CloudFormation does a stack's
    resources: each principal in it gets exactly its permission level, and every other principal
    (anyone shared by hand, public access) is removed, except the service account.
-4. apply_project_template(): placeholder for the rest of the project setup.
+5. apply_project_template(): placeholder for the rest of the project setup.
 
 It must run as the service account in the bucket stack's SynapseServiceAccountId output: only a
 storage location's creator may create file handles in it, which is what the sync does.
@@ -40,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from synapseclient import Synapse  # noqa: E402
 from synapseclient.core.exceptions import SynapseHTTPError  # noqa: E402
 from synapseclient.models import (  # noqa: E402
+    Folder,
     Project,
     StorageLocation,
     StorageLocationType,
@@ -47,7 +51,12 @@ from synapseclient.models import (  # noqa: E402
 )
 from synapseclient.operations import find_entity_id  # noqa: E402
 
-from src.synapse_template import PERMISSIONS, load_template, parse_ref  # noqa: E402
+from src.synapse_template import (  # noqa: E402
+    DEFAULT_STS_FOLDER,
+    PERMISSIONS,
+    load_template,
+    parse_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +133,7 @@ def resolve_refs(value, outputs: dict):
 
 def setup_project(syn, current_user: str, project: dict, bucket: dict) -> dict:
     name, bucket_name = project["name"], bucket["BucketName"]
+    sts_folder = project.get("sts_folder", DEFAULT_STS_FOLDER)
     if current_user != str(bucket["SynapseServiceAccountId"]):
         raise SetupError(
             f"Logged in as Synapse user {current_user}, not the service account "
@@ -134,27 +144,50 @@ def setup_project(syn, current_user: str, project: dict, bucket: dict) -> dict:
         project_id = ensure_project(syn, name)
         # Straight after creation: nothing can be uploaded to the project before this
         location_id = ensure_only_location(syn, Project(id=project_id), bucket_name)
+        sts_folder_id = find_entity_id(sts_folder, project_id, synapse_client=syn)
+        sts_folder_id = sts_folder_id or _create_folder(syn, sts_folder, project_id)
+        sts_location_id = ensure_only_location(syn, Folder(id=sts_folder_id), bucket_name, sts=True)
         acl_changes = ensure_acl(syn, Project(id=project_id), project.get("acl", []), current_user)
         apply_project_template(syn, project_id, project)
     except SynapseHTTPError as e:
         if _status(e) in (400, 403):
             raise SetupError(
                 f"Could not connect s3://{bucket_name} to '{name}': {e}. Check the bucket's "
-                "owner.txt lists the service account, and that the service account administers "
-                "the project"
+                "owner.txt lists the service account, that the service account administers the "
+                f"project, and that '{sts_folder}' is empty with no other storage location "
+                "(Synapse only adds STS to such a folder)"
             ) from e
         raise
     logger.info(
-        "✓ %s: %s on s3://%s, upload location %s", name, project_id, bucket_name, location_id
+        "✓ %s: %s on s3://%s, upload location %s; STS folder %s %s (location %s)",
+        name,
+        project_id,
+        bucket_name,
+        location_id,
+        sts_folder,
+        sts_folder_id,
+        sts_location_id,
     )
     for change in acl_changes:
         logger.info("  sharing %s", change)
+    logger.info(_contributor_help(sts_folder_id, bucket_name))
     return {
         "name": name,
         "project_id": project_id,
         "bucket": bucket_name,
         "storage_location_id": location_id,
+        "sts_folder_id": sts_folder_id,
+        "sts_location_id": sts_location_id,
     }
+
+
+def _contributor_help(sts_folder_id: str, bucket: str) -> str:
+    return f"""
+  Send the provider (who needs edit access to {sts_folder_id}):
+    python tools/contribute.py --sts-folder {sts_folder_id} <local-dir> <s3-folder>
+  It uploads <local-dir> to s3://{bucket}/<s3-folder>/ with read-write STS credentials, then
+  writes <s3-folder>/sidecar.json, which indexes the folder into the project at <s3-folder>/.
+"""
 
 
 def ensure_project(syn, name: str) -> str:
@@ -174,14 +207,16 @@ def ensure_project(syn, name: str) -> str:
         raise
 
 
-def ensure_only_location(syn, container, bucket: str) -> int:
+def ensure_only_location(syn, container, bucket: str, sts: bool = False) -> int:
     """
-    Make the service account's external S3 location on the bucket the container's only upload
-    destination; returns its ID. StorageLocation.store() returns this user's existing identical
-    location rather than a duplicate.
+    Make the service account's external S3 location on the bucket (STS-enabled or not) the
+    container's only upload destination; returns its ID. StorageLocation.store() returns this
+    user's existing identical location rather than a duplicate.
     """
     location_id = (
-        StorageLocation(storage_type=StorageLocationType.EXTERNAL_S3, bucket=bucket)
+        StorageLocation(
+            storage_type=StorageLocationType.EXTERNAL_S3, bucket=bucket, sts_enabled=sts or None
+        )
         .store(synapse_client=syn)
         .storage_location_id
     )
@@ -231,6 +266,11 @@ def ensure_acl(syn, project, acl: list, current_user: str) -> list:
     return [f"{p}: {','.join(a) if a else 'removed'}" for p, a in changes]
 
 
+def _create_folder(syn, name: str, parent_id: str) -> str:
+    folder = Folder(name=name, parent_id=parent_id, create_or_update=False)
+    return folder.store(synapse_client=syn).id
+
+
 def apply_project_template(syn, project_id: str, project: dict) -> None:
     """
     Placeholder for the rest of a provider project's setup, along the lines of HTAN2's
@@ -252,14 +292,15 @@ def _report(template: str, results: list, failures: list) -> None:
     lines = [
         f"### Synapse projects ({template})",
         "",
-        "| Project | ID | Bucket | Upload location |",
-        "|---|---|---|---|",
+        "| Project | ID | Bucket | Upload location | STS folder |",
+        "|---|---|---|---|---|",
     ]
     lines += [
-        f"| {r['name']} | {r['project_id']} | `{r['bucket']}` | {r['storage_location_id']} |"
+        f"| {r['name']} | {r['project_id']} | `{r['bucket']}` | {r['storage_location_id']} "
+        f"| {r['sts_folder_id']} (location {r['sts_location_id']}) |"
         for r in results
     ]
-    lines += [f"| {p['name']} | ✗ {e} | | |" for p, e in failures]
+    lines += [f"| {p['name']} | ✗ {e} | | | |" for p, e in failures]
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as f:

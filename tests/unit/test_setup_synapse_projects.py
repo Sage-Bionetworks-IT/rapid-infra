@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,8 +30,9 @@ class FakeSynapse:
 
     def __init__(self):
         self.projects = {}  # name -> id
-        self.settings = {}  # project id -> upload locations (absent: none set)
-        self.locations = {}  # bucket -> id
+        self.folders = {}  # (parent id, name) -> id
+        self.settings = {}  # project or folder id -> upload locations (absent: none set)
+        self.locations = {}  # (bucket, sts) -> id
         self.user = SERVICE_ACCOUNT
         self.invisible_projects = set()  # names taken by projects the user cannot see
         self.acls = {}  # project id -> {principal id (str): access types}
@@ -50,14 +52,28 @@ class FakeSynapse:
         self.acls[self.projects[name]] = {self.user: ADMIN}
         return self.projects[name]
 
+    def create_folder(self, name, parent_id):
+        if (parent_id, name) in self.folders:
+            raise _http_error(409)
+        self._next += 1
+        self.folders[(parent_id, name)] = f"syn{self._next}"
+        return self.folders[(parent_id, name)]
+
+    def children(self, parent_id):
+        return {n: i for (p, n), i in self.folders.items() if p == parent_id}
+
+    def is_sts(self, location_id):
+        return next(sts for (_, sts), i in self.locations.items() if i == location_id)
+
 
 # The fakes get the FakeSynapse as synapse_client, as main() passes its Synapse() client (the
 # fixture makes that the FakeSynapse too)
 
 
 def fake_find_entity_id(name, parent=None, *, synapse_client):
-    assert parent is None, "only projects are looked up"
-    return synapse_client.projects.get(name)
+    if parent is None:
+        return synapse_client.projects.get(name)
+    return synapse_client.folders.get((parent, name))
 
 
 class FakeProject:
@@ -74,6 +90,8 @@ class FakeProject:
         return None if locations is None else SimpleNamespace(locations=locations)
 
     def set_storage_location(self, *, storage_location_id, synapse_client):
+        if synapse_client.is_sts(storage_location_id):
+            raise _http_error(400)  # "Can only enable STS on a folder"
         synapse_client.settings[self.id] = [storage_location_id]
 
     def list_acl(self, *, synapse_client):
@@ -97,14 +115,35 @@ class FakeProject:
             acl.pop(str(principal_id), None)
 
 
+class FakeFolder:
+    def __init__(self, id=None, name=None, parent_id=None, create_or_update=True):
+        assert create_or_update is False or id is not None, "creates must not update"
+        self.id, self.name, self.parent_id = id, name, parent_id
+
+    def store(self, *, synapse_client):
+        self.id = synapse_client.create_folder(self.name, self.parent_id)
+        return self
+
+    def get_project_setting(self, *, setting_type, synapse_client):
+        locations = synapse_client.settings.get(self.id)
+        return None if locations is None else SimpleNamespace(locations=locations)
+
+    def set_storage_location(self, *, storage_location_id, synapse_client):
+        if synapse_client.is_sts(storage_location_id) and synapse_client.children(self.id):
+            raise _http_error(400)  # STS only on an empty folder
+        synapse_client.settings[self.id] = [storage_location_id]
+
+
 class FakeStorageLocation:
-    def __init__(self, *, storage_type, bucket):
-        self.bucket = bucket
+    def __init__(self, *, storage_type, bucket, sts_enabled=None):
+        self.bucket, self.sts = bucket, bool(sts_enabled)
 
     def store(self, *, synapse_client):
         # Synapse returns the user's existing identical location
         locations = synapse_client.locations
-        self.storage_location_id = locations.setdefault(self.bucket, 1000 + len(locations))
+        self.storage_location_id = locations.setdefault(
+            (self.bucket, self.sts), 1000 + len(locations)
+        )
         return self
 
 
@@ -118,6 +157,7 @@ def syn(monkeypatch):
     world = FakeSynapse()
     monkeypatch.setattr(setup, "find_entity_id", fake_find_entity_id)
     monkeypatch.setattr(setup, "Project", FakeProject)
+    monkeypatch.setattr(setup, "Folder", FakeFolder)
     monkeypatch.setattr(setup, "StorageLocation", FakeStorageLocation)
     monkeypatch.setattr(setup, "UserProfile", FakeUserProfile)
     monkeypatch.setattr(setup, "Synapse", lambda **kwargs: world)
@@ -140,26 +180,51 @@ def _files(tmp_path, projects, outputs):
     return ["--template", str(template), "--cdk-outputs", str(cdk_outputs)]
 
 
-def test_creates_the_project_on_the_deployed_bucket(syn):
+def test_creates_the_project_on_the_deployed_bucket_with_the_sts_shim(syn):
     result = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
 
     project_id = syn.projects["RAPID A"]
-    location_id = syn.locations["rapid-test-a"]
+    location_id = syn.locations[("rapid-test-a", False)]
+    sts_location_id = syn.locations[("rapid-test-a", True)]
+    sts_folder_id = syn.folders[(project_id, "sts")]
     assert result == {
         "name": "RAPID A",
         "project_id": project_id,
         "bucket": "rapid-test-a",
         "storage_location_id": location_id,
+        "sts_folder_id": sts_folder_id,
+        "sts_location_id": sts_location_id,
     }
     assert syn.settings[project_id] == [location_id]
+    assert syn.settings[sts_folder_id] == [sts_location_id]
+    assert syn.children(sts_folder_id) == {}
+
+
+def test_custom_sts_folder_name(syn):
+    setup.setup_project(syn, SERVICE_ACCOUNT, {**PROJECT, "sts_folder": "contribute"}, BUCKET)
+    assert set(syn.children(syn.projects["RAPID A"])) == {"contribute"}
+
+
+def test_non_empty_sts_folder_is_a_setup_error(syn):
+    project_id = syn.create_project("RAPID A")
+    syn.create_folder("stray", syn.create_folder("sts", project_id))
+    with pytest.raises(setup.SetupError, match="'sts' is empty"):
+        setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
+
+
+def test_logs_the_contribute_command_for_the_provider(syn, caplog):
+    caplog.set_level(logging.INFO)
+    result = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
+    assert f"tools/contribute.py --sts-folder {result['sts_folder_id']}" in caplog.text
+    assert "s3://rapid-test-a/<s3-folder>/" in caplog.text
 
 
 def test_rerun_changes_nothing(syn):
     first = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
-    projects, settings = dict(syn.projects), dict(syn.settings)
+    state = (dict(syn.projects), dict(syn.folders), dict(syn.settings))
 
     assert setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET) == first
-    assert syn.projects == projects and syn.settings == settings
+    assert (syn.projects, syn.folders, syn.settings) == state
 
 
 def test_existing_project_loses_every_other_upload_location(syn):
@@ -169,7 +234,7 @@ def test_existing_project_loses_every_other_upload_location(syn):
 
     setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
 
-    assert syn.settings[project_id] == [syn.locations["rapid-test-a"]]
+    assert syn.settings[project_id] == [syn.locations[("rapid-test-a", False)]]
 
 
 TEAM = 3629180
@@ -298,7 +363,10 @@ def test_main_sets_up_every_project_and_writes_the_job_summary(syn, monkeypatch,
     assert setup.main(args) == 0
 
     assert set(syn.projects) == {"RAPID A", "RAPID B"}
-    assert set(syn.locations) == {"rapid-test-a", "rapid-test-b"}
+    # A non-STS and an STS location on each bucket
+    assert set(syn.locations) == {
+        (b, sts) for b in ("rapid-test-a", "rapid-test-b") for sts in (False, True)
+    }
     assert "`rapid-test-a`" in summary.read_text()
     assert "`rapid-test-b`" in summary.read_text()
 
