@@ -20,6 +20,7 @@ class SynapseBucketStack(cdk.Stack):
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
     - The bucket is retained when the stack is deleted
+    - `data_store_tags` (config DATA_STORE_TAGS, e.g. Vanta's data classification) on the bucket
 
     Its Synapse project (config/synapse/{env}.yaml) is set up from this stack's outputs by
     tools/setup_synapse_projects.py, which CI runs after every deploy: never create it by hand,
@@ -33,6 +34,7 @@ class SynapseBucketStack(cdk.Stack):
         bucket_config: dict,
         synapse_aws_account_id: str,
         synapse_service_account_id: str,
+        data_store_tags: dict | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -62,6 +64,8 @@ class SynapseBucketStack(cdk.Stack):
                 )
             ],
         )
+        for key, value in (data_store_tags or {}).items():
+            cdk.Tags.of(self.bucket).add(key, value)
 
         # Every S3 event goes to EventBridge, where the pipeline's rule picks out sidecars. Set on
         # the CloudFormation resource: `event_bridge_enabled=True` would add a custom-resource

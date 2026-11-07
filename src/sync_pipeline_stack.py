@@ -17,6 +17,8 @@ from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
+from src.alarms import dlq_age_alarm
+
 _RUNTIME = lambda_.Runtime.PYTHON_3_13
 # synapseclient pulls in compiled wheels; build and run on one architecture
 _ARCH = lambda_.Architecture.ARM_64
@@ -299,7 +301,9 @@ class SyncPipelineStack(cdk.Stack):
         )
 
         # -------------------
-        # Alarms: an email per failed execution, and one if EventBridge can't start any
+        # Alarms: an email per failed execution, and one if EventBridge can't start any (and
+        # again if that event is still in the DLQ an hour later). Every Lambda's Errors alarm,
+        # in any stack, emails this topic too (app.py, LambdaErrorAlarms).
         # -------------------
         self.alarm_topic = sns.Topic(self, "AlarmTopic", enforce_ssl=True)
         if alarm_email:
@@ -344,6 +348,9 @@ class SyncPipelineStack(cdk.Stack):
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description="EventBridge failed to start an S3 → Synapse sync execution",
         ).add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
+        dlq_age_alarm(
+            self, "SidecarRuleDLQAgeAlarm", self.rule_dlq, "A sidecar event", self.alarm_topic
+        )
 
         cdk.CfnOutput(self, "SyncStateMachineArn", value=self.state_machine.state_machine_arn)
         cdk.CfnOutput(self, "SynapsePatSecretArn", value=self.pat_secret.secret_arn)
