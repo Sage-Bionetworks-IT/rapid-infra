@@ -19,7 +19,7 @@ BUCKETS:
     sts_folder: sts
     # Synapse user or team IDs written to owner.txt (the service account is added for you)
     synapse_owner_ids: [3627882]
-    # Optional. IAM principals (ARNs) with read/write on the objects
+    # Optional. IAM principals (ARNs) with read/write on the objects; not needed with STS
     s3_user_arns: []
     # Optional. IAM principals (ARNs) with full access to the bucket
     s3_admin_arns: []

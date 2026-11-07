@@ -11,7 +11,10 @@ Changes from upstream:
 - The project and its storage location are resolved once per sync, and the location must be an
   external S3 location on this bucket (upstream took the project's first upload location,
   whatever it pointed at). Both are looked up, never created: tools/setup_synapse_projects.py
-  sets them up after each deploy (resolve_storage)
+  sets them up after each deploy (resolve_storage). Contributors upload with read-write STS
+  credentials from a separate, empty "shim" folder whose STS location covers the whole bucket
+  (also set up by the script); files are indexed at the project root, mirroring their S3 keys,
+  on the project's non-STS location
 - The ETag is used as the MD5 only when it is one (single-part, not SSE-KMS)
 - Empty path segments (a//b) are skipped instead of creating unnamed folders
 - A folder created concurrently by another worker is looked up, not updated
@@ -47,7 +50,8 @@ def _status(error: SynapseHTTPError):
 
 def resolve_storage_location(syn: Synapse, project_id: str, bucket: str) -> int:
     """
-    The project's upload storage location on this bucket that the service account created.
+    The project's non-STS upload storage location on this bucket that the service account
+    created (the STS one, on the shim folder, is for contributors' credentials).
     Only a storage location's creator may create file handles in it, and only the creator can
     read it here, so a location someone else made on the same bucket does not count.
     """
@@ -57,7 +61,11 @@ def resolve_storage_location(syn: Synapse, project_id: str, bucket: str) -> int:
             location = StorageLocation(storage_location_id=location_id).get(synapse_client=syn)
         except SynapseHTTPError:
             continue  # created by someone else, so not usable by the service account
-        if location.storage_type is StorageLocationType.EXTERNAL_S3 and location.bucket == bucket:
+        if (
+            location.storage_type is StorageLocationType.EXTERNAL_S3
+            and location.bucket == bucket
+            and not location.sts_enabled
+        ):
             return location.storage_location_id
     raise IndexingError(
         f"Project {project_id} has no upload storage location on s3://{bucket} created by this "
