@@ -41,7 +41,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 
 | Stack | Purpose |
 |---|---|
-| `rapid-{env}-bucket-{bucket_name}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
+| `rapid-{env}-bucket-{bucket_name}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
 | `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
 
 Adding a provider is a config change: a `BUCKETS` entry in `config/aws/{env}.yaml` and its
@@ -90,6 +90,24 @@ The job summary lists each project's ID, bucket, upload location and STS folder;
 has each project's `contribute.py` command for its provider. A project that fails (say,
 its bucket stack is missing from the outputs) does not stop the others; fix it and use "Re-run
 failed jobs".
+
+### Alarms (and Vanta)
+
+Every alarm emails `ALARM_EMAIL` through the pipeline's SNS topic. The bucket stacks import it
+from the pipeline; the pipeline imports nothing from them, so bucket stacks still come and go.
+Some exist for Vanta's AWS tests, which read an alarm's top-level `MetricName` and dimensions
+(so an alarm's metric must have no `label`, which would make it a math alarm):
+
+- An `Errors` alarm on every Lambda function, CDK's own included (`src/alarms.py`
+  `lambda_error_alarms`, called last in each stack, so a new function needs no code change).
+  It fires at `LAMBDA_ERROR_ALARMS.errors_per_5_minutes` (1), so a Sync error that Step
+  Functions retries successfully can still email. Vanta: "Serverless function error rate
+  monitored (AWS)"
+- The sidecar rule's DLQ: one alarm when a message lands, another if it is still there an hour
+  later. A new queue needs an `ApproximateAgeOfOldestMessage` alarm too (`dlq_age_alarm`, at
+  most 5000 s). Vanta: "Messaging queue message age monitored"
+- `DATA_STORE_TAGS` (`VantaContainsUserData`, `VantaUserDataStored`) classify the provider
+  buckets. S3 tag values allow only letters, digits, spaces and `+ - = . _ : / @`
 
 ## Configuration
 
