@@ -146,6 +146,7 @@ def test_missing_project_name_rejected():
         ({"SYNAPSE__service_account_id": "TODO"}, "service_account_id"),
         ({"SYNC__sidecar_filename": "a/sidecar.json"}, "sidecar_filename"),
         ({"AWS_ACCOUNT": "dnt-dev"}, "12-digit"),
+        ({"BUCKETS__0__kms_encryption": "yes"}, "kms_encryption"),
     ],
 )
 def test_invalid_config_rejected(changes, message):

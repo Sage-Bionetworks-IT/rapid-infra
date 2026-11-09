@@ -5,3 +5,7 @@ projects:
     acl:
       - principal_id: 3629180
         permission: edit
+  # SSE-KMS trial (config/aws/sandbox.yaml: rapid-sandbox-kmstest-data); the existing project
+  # syn78555380
+  - name: RAPID KMS Test
+    bucket: $ref.BucketName.rapid-sandbox-kmstest-data
