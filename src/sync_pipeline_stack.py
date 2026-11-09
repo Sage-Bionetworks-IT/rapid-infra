@@ -165,6 +165,10 @@ class SyncPipelineStack(cdk.Stack):
         )
         self.pat_secret.grant_read(self.storage_fn)
 
+        # The roles that read bucket objects (sidecars, files to hash). A kms_encryption bucket's
+        # key policy lets them decrypt, so the pipeline needs no KMS grant of its own
+        self.object_readers = [self.prepare_fn.role, self.sync_fn.role]
+
         # -------------------
         # Per-run results (one JSON result per file), written by the Distributed Map
         # -------------------

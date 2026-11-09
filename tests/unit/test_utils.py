@@ -161,6 +161,7 @@ def test_missing_project_name_rejected():
         ({"AWS_ACCOUNT": "dnt-dev"}, "12-digit"),
         ({"BUCKETS__0__sts_folder": "a/b"}, "sts_folder"),
         ({"BUCKETS__0__sts_folder": "  "}, "sts_folder"),
+        ({"BUCKETS__0__kms_encryption": "yes"}, "kms_encryption"),
     ],
 )
 def test_invalid_config_rejected(changes, message):

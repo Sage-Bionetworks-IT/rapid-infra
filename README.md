@@ -91,7 +91,45 @@ Some exist for Vanta's AWS tests, which read an alarm's top-level `MetricName` a
 - `DATA_STORE_TAGS` (`VantaContainsUserData`, `VantaUserDataStored`) classify the provider
   buckets. S3 tag values allow only letters, digits, spaces and `+ - = . _ : / @`
 
-## Configuration
+### SSE-KMS (opt-in)
+
+Provider buckets use SSE-S3 by default, which Vanta's "User data in S3 is encrypted at rest
+(AWS)" accepts. `kms_encryption: true` on a `BUCKETS` entry switches that bucket to SSE-KMS:
+
+- Its own customer-managed key, `alias/rapid-{env}-bucket-{id}`, rotated yearly and retained
+  with the bucket (deleting the key would make every object unreadable). An S3 Bucket Key
+  keeps KMS calls to about one per bucket rather than one per object
+- The key policy lets the bucket's read/write principals (Synapse's AWS account,
+  `s3_user_arns`, `s3_admin_arns`) and the pipeline's Prepare and Sync roles use the key,
+  only through S3 (`kms:ViaService`). The bucket stack imports those role ARNs from the
+  pipeline stack (the same direction as the alarm topic)
+- The bucket policy denies a `PutObject` (and so a multipart upload or copy) that asks for
+  SSE-S3, another KMS key or SSE-C. A write with no encryption headers gets the bucket
+  default, so uploaders need no changes; they should not pass `--sse`. `--sse aws:kms` alone
+  is denied too, since S3 then picks the AWS-managed `aws/s3` key; `--sse-kms-key-id` must be
+  the full `KmsKeyArn` output
+- `owner.txt` is the exception, written as SSE-S3: Synapse reads it with its own credentials
+  to create a storage location, and it holds only Synapse IDs
+
+**Synapse STS credentials can neither write nor read a KMS bucket.** Tested in the sandbox
+(`rapid-sandbox-bucket-kmstest`), STS uploads fail with `not authorized to perform:
+kms:GenerateDataKey ... because no identity-based policy allows the kms:GenerateDataKey
+action`, and STS reads the same way on `kms:Decrypt`. Synapse's temporary-credentials role has
+no KMS permissions, and its STS session policy allows only S3 actions
+([`StsManagerImpl`](https://github.com/Sage-Bionetworks/Synapse-Repository-Services/blob/develop/services/repository-managers/src/main/java/org/sagebionetworks/repo/manager/sts/StsManagerImpl.java)),
+so no grant on our side helps: Synapse would have to add `kms:GenerateDataKey` and
+`kms:Decrypt` to both. What does work on a KMS bucket:
+
+- Writes with credentials from our account (or `s3_user_arns` principals with the key grant)
+- The pipeline: Prepare and Sync decrypt the sidecar and files, and index them
+- Downloads through Synapse (web, `synapseclient`): Synapse signs them with a role that has
+  `kms:Decrypt`, which our key policy allows
+
+To try it without touching a bucket people already use, add a second `BUCKETS` entry with its
+own bucket name, Synapse project and `kms_encryption: true`. Switching an existing bucket either
+way is safe but only affects new objects: existing ones keep the encryption they were written
+with.
+
 
 `config/base.yaml` is always loaded, then deep-merged with the environment's config,
 `config/{env}.yaml` (`.yml` or `.json` also work, one file per env): the env file wins, nested
@@ -114,6 +152,7 @@ BUCKETS:
     s3_admin_arns: []
     deny_delete_arns: []
     versioned: false
+    kms_encryption: false            # optional: SSE-KMS with the bucket's own key (see SSE-KMS)
 ```
 
 ## Contributing data (providers)
