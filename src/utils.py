@@ -163,6 +163,8 @@ def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
     for field in _BUCKET_LIST_FIELDS:
         if not isinstance(bucket.get(field, []), list):
             raise ValueError(f"{where}.{field} must be a list")
+    if not isinstance(bucket.get("kms_encryption", False), bool):
+        raise ValueError(f"{where}.kms_encryption must be true or false")
     for owner in bucket.get("synapse_owner_ids", []):
         if not _SYNAPSE_PRINCIPAL.match(str(owner)):
             raise ValueError(f"{where}.synapse_owner_ids: '{owner}' is not a numeric Synapse ID")

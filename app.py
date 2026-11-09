@@ -47,6 +47,8 @@ for bucket in buckets:
         synapse_account_id=config["SYNAPSE"]["aws_account_id"],
         synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
         data_store_tags=config.get("DATA_STORE_TAGS"),
+        # Read objects under a kms_encryption bucket's key (a role ARN import, only then)
+        kms_key_users=pipeline_stack.object_readers,
         alarm_topic=pipeline_stack.alarm_topic,
         lambda_errors_per_5_minutes=lambda_errors,
         env=env,

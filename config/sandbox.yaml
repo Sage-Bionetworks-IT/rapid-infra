@@ -44,3 +44,11 @@ BUCKETS:
     deny_delete_arns: []
     # Optional, default false
     versioned: false
+
+  # SSE-KMS trial (README: "SSE-KMS"): its own bucket and project, so the bucket above keeps
+  # working for contribution tests. Expect STS uploads (contribute.py) to get AccessDenied
+  - id: kmstest
+    bucket_name: rapid-sandbox-kmstest-data
+    synapse_project_name: RAPID KMS Test
+    synapse_owner_ids: [3627882]
+    kms_encryption: true
