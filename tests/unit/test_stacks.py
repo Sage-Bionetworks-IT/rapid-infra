@@ -1,6 +1,8 @@
 import json
 
+import aws_cdk as cdk
 import pytest
+from aws_cdk import aws_iam as iam
 from aws_cdk.assertions import Match, Template
 
 from src.synapse_template import load_template, project_names
@@ -14,6 +16,7 @@ BUCKET = {
     "s3_user_arns": ["arn:aws:iam::111111111111:role/provider-a"],
     "deny_delete_arns": ["arn:aws:iam::111111111111:role/provider-a"],
 }
+ADMIN = "arn:aws:iam::222222222222:role/admin"
 SYNC = {
     "sidecar_filename": "sidecar.json",
     "max_concurrency": 7,
@@ -35,6 +38,24 @@ def bucket_template(app):
 
 
 @pytest.fixture
+def kms_bucket_template(app):
+    # As app.py wires it: the pipeline's reader roles come from another stack
+    env = cdk.Environment(region="us-east-1")
+    other = cdk.Stack(app, "test-pipeline-like", env=env)
+    reader = iam.Role(other, "Reader", assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"))
+    stack = SynapseBucketStack(
+        app,
+        "test-bucket-k",
+        bucket_config={**BUCKET, "kms_encryption": True, "s3_admin_arns": [ADMIN]},
+        synapse_aws_account_id="325565585839",
+        synapse_service_account_id="1234567",
+        kms_key_users=[reader],
+        env=env,
+    )
+    return Template.from_stack(stack)
+
+
+@pytest.fixture
 def pipeline_template(app):
     stack = SyncPipelineStack(
         app,
@@ -50,9 +71,9 @@ def pipeline_template(app):
     return Template.from_stack(stack)
 
 
-def _statements(template, resource_type):
+def _statements(template, resource_type, document="PolicyDocument"):
     (policy,) = template.find_resources(resource_type).values()
-    return {s.get("Sid"): s for s in policy["Properties"]["PolicyDocument"]["Statement"]}
+    return {s.get("Sid"): s for s in policy["Properties"][document]["Statement"]}
 
 
 def test_bucket_is_private_retained_and_sends_events(bucket_template):
@@ -100,6 +121,88 @@ def test_outputs_feed_the_synapse_setup(bucket_template):
     outputs = bucket_template.find_outputs("*")
     assert {"BucketName", "SynapseServiceAccountId"} <= set(outputs)
     assert outputs["SynapseServiceAccountId"]["Value"] == "1234567"
+
+
+def _sse_default(template):
+    (bucket,) = template.find_resources("AWS::S3::Bucket").values()
+    (rule,) = bucket["Properties"]["BucketEncryption"]["ServerSideEncryptionConfiguration"]
+    return rule
+
+
+def test_bucket_defaults_to_sse_s3_without_a_key(bucket_template):
+    rule = _sse_default(bucket_template)
+    assert rule["ServerSideEncryptionByDefault"] == {"SSEAlgorithm": "AES256"}
+    assert "BucketKeyEnabled" not in rule
+    assert not bucket_template.find_resources("AWS::KMS::Key")
+    statements = _statements(bucket_template, "AWS::S3::BucketPolicy")
+    assert not {"DenyNonKmsEncryption", "DenyOtherKmsKey", "DenySseC"} & set(statements)
+    (owner,) = bucket_template.find_resources("Custom::AWS").values()
+    assert "ServerSideEncryption" not in json.dumps(owner["Properties"]["Create"])
+
+
+def test_kms_bucket_uses_its_own_retained_rotated_key(kms_bucket_template):
+    (key_id,) = kms_bucket_template.find_resources("AWS::KMS::Key")
+    kms_bucket_template.has_resource(
+        "AWS::KMS::Key",
+        {
+            "DeletionPolicy": "Retain",
+            "Properties": Match.object_like({"EnableKeyRotation": True}),
+        },
+    )
+    kms_bucket_template.has_resource_properties(
+        "AWS::KMS::Alias", {"AliasName": "alias/test-bucket-k"}
+    )
+    assert _sse_default(kms_bucket_template) == {
+        "BucketKeyEnabled": True,
+        "ServerSideEncryptionByDefault": {
+            "KMSMasterKeyID": {"Fn::GetAtt": [key_id, "Arn"]},
+            "SSEAlgorithm": "aws:kms",
+        },
+    }
+
+
+def test_kms_key_policy_grants_bucket_principals_and_pipeline_via_s3_only(kms_bucket_template):
+    statements = _statements(kms_bucket_template, "AWS::KMS::Key", "KeyPolicy")
+    via_s3 = {"StringEquals": {"kms:ViaService": "s3.us-east-1.amazonaws.com"}}
+    readwrite = statements["BucketReadWriteViaS3"]
+    assert sorted(readwrite["Action"]) == ["kms:Decrypt", "kms:GenerateDataKey*"]
+    assert readwrite["Condition"] == via_s3
+    rendered = json.dumps(readwrite["Principal"])
+    assert "325565585839" in rendered and "role/provider-a" in rendered and ADMIN in rendered
+    pipeline = statements["PipelineReadViaS3"]
+    assert pipeline["Action"] == "kms:Decrypt"
+    assert pipeline["Condition"] == via_s3
+    assert "Fn::ImportValue" in json.dumps(pipeline["Principal"])
+
+
+def test_kms_bucket_denies_other_encryption_but_not_plain_writes(kms_bucket_template):
+    (key_id,) = kms_bucket_template.find_resources("AWS::KMS::Key")
+    statements = _statements(kms_bucket_template, "AWS::S3::BucketPolicy")
+    other_sse = statements["DenyNonKmsEncryption"]
+    other_key = statements["DenyOtherKmsKey"]
+    sse_c = statements["DenySseC"]
+    for deny in (other_sse, other_key, sse_c):
+        assert deny["Effect"] == "Deny" and deny["Principal"] == {"AWS": "*"}
+        assert deny["Action"] == "s3:PutObject"
+    # Each denial needs its header present, so a write without one gets the bucket default
+    assert other_sse["Condition"] == {
+        "Null": {"s3:x-amz-server-side-encryption": "false"},
+        "StringNotEquals": {"s3:x-amz-server-side-encryption": "aws:kms"},
+    }
+    assert other_key["Condition"] == {
+        "Null": {"s3:x-amz-server-side-encryption-aws-kms-key-id": "false"},
+        "StringNotEquals": {
+            "s3:x-amz-server-side-encryption-aws-kms-key-id": {"Fn::GetAtt": [key_id, "Arn"]}
+        },
+    }
+    assert sse_c["Condition"] == {
+        "Null": {"s3:x-amz-server-side-encryption-customer-algorithm": "false"}
+    }
+    # owner.txt is the one object written as SSE-S3
+    assert "owner.txt" in json.dumps(other_sse["NotResource"])
+    (owner,) = kms_bucket_template.find_resources("Custom::AWS").values()
+    assert '\\"ServerSideEncryption\\":\\"AES256\\"' in json.dumps(owner["Properties"]["Create"])
+    kms_bucket_template.has_output("KmsKeyArn", Match.any_value())
 
 
 def test_sidecar_rule_matches_configured_buckets(pipeline_template):
@@ -212,25 +315,27 @@ def test_failure_email(pipeline_template):
     )
 
 
+@pytest.mark.parametrize("kms", [False, True])
 @pytest.mark.parametrize("env", ["dev", "prod", "sandbox"])
-def test_repo_configs_synthesize(app, env):
+def test_repo_configs_synthesize(app, env, kms):
+    # As app.py builds them; with kms, the bucket stacks import the pipeline's reader roles
     config = load_context_config(env)
+    if not config["BUCKETS"]:
+        return
+    pipeline = SyncPipelineStack(
+        app,
+        "pipeline",
+        buckets=config["BUCKETS"],
+        project_names=project_names(load_template(f"config/synapse/{env}.yaml"), config["BUCKETS"]),
+        sync_config=config["SYNC"],
+    )
     for bucket in config["BUCKETS"]:
         SynapseBucketStack(
             app,
             f"bucket-{bucket['bucket_name']}",
-            bucket_config=bucket,
+            bucket_config={**bucket, "kms_encryption": kms},
             synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
             synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
-        )
-    if config["BUCKETS"]:
-        SyncPipelineStack(
-            app,
-            "pipeline",
-            buckets=config["BUCKETS"],
-            project_names=project_names(
-                load_template(f"config/synapse/{env}.yaml"), config["BUCKETS"]
-            ),
-            sync_config=config["SYNC"],
+            kms_key_users=pipeline.object_readers,
         )
     app.synth()

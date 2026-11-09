@@ -1,8 +1,11 @@
 import aws_cdk as cdk
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_kms as kms
 from aws_cdk import aws_s3 as s3
 from aws_cdk import custom_resources as cr
 from constructs import Construct
+
+OWNER_FILE = "owner.txt"
 
 
 class SynapseBucketStack(cdk.Stack):
@@ -20,6 +23,12 @@ class SynapseBucketStack(cdk.Stack):
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
     - The bucket is retained when the stack is deleted
+    - Encryption: SSE-S3 by default. With `kms_encryption: true`, SSE-KMS under the bucket's own
+      customer-managed key (rotated yearly, retained with the bucket), with an S3 Bucket Key,
+      and a bucket policy that denies writes asking for any other encryption or key. The key
+      policy lets the bucket's read/write principals and `kms_key_users` (the pipeline Lambdas
+      that read objects) use it, only through S3. Synapse's STS credentials have no KMS
+      permissions, so STS contributors cannot write to such a bucket (README)
 
     Its Synapse project (config/synapse/{env}.yaml) is set up from this stack's outputs by
     tools/setup_synapse_projects.py, which CI runs after every deploy: never create it by hand,
@@ -33,15 +42,32 @@ class SynapseBucketStack(cdk.Stack):
         bucket_config: dict,
         synapse_aws_account_id: str,
         synapse_service_account_id: str,
+        # Principals that read objects (the pipeline's Lambdas), for a kms_encryption bucket
+        kms_key_users: list[iam.IPrincipal] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # The key is retained like the bucket: deleting it would make every object unreadable
+        self.key = None
+        if bucket_config.get("kms_encryption", False):
+            self.key = kms.Key(
+                self,
+                "EncryptionKey",
+                alias=f"alias/{construct_id}",
+                description=f"SSE-KMS key of s3://{bucket_config['bucket_name']}",
+                enable_key_rotation=True,
+                removal_policy=cdk.RemovalPolicy.RETAIN,
+            )
 
         self.bucket = s3.Bucket(
             self,
             "Bucket",
             bucket_name=bucket_config["bucket_name"],
-            encryption=s3.BucketEncryption.S3_MANAGED,
+            encryption=s3.BucketEncryption.KMS if self.key else s3.BucketEncryption.S3_MANAGED,
+            encryption_key=self.key,
+            # One data key per bucket instead of a KMS call per object
+            bucket_key_enabled=True if self.key else None,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             enforce_ssl=True,
@@ -95,12 +121,12 @@ class SynapseBucketStack(cdk.Stack):
             )
         )
 
-        admin_arns = bucket_config.get("s3_admin_arns", [])
-        if admin_arns:
+        admin_principals = [iam.ArnPrincipal(arn) for arn in bucket_config.get("s3_admin_arns", [])]
+        if admin_principals:
             self.bucket.add_to_resource_policy(
                 iam.PolicyStatement(
                     sid="AdminAccess",
-                    principals=[iam.ArnPrincipal(arn) for arn in admin_arns],
+                    principals=admin_principals,
                     actions=["s3:*"],
                     resources=[self.bucket.bucket_arn, self.bucket.arn_for_objects("*")],
                 )
@@ -118,21 +144,30 @@ class SynapseBucketStack(cdk.Stack):
                 )
             )
 
+        if self.key:
+            self._enforce_kms(rw_principals + admin_principals, kms_key_users or [])
+
         # owner.txt proves bucket ownership to Synapse when a storage location is created. The
         # creator must be listed, and only the storage location's creator may create file
         # handles in it, so the sync service account is always included.
         owners = [str(o) for o in bucket_config.get("synapse_owner_ids", [])]
         if str(synapse_service_account_id) not in owners:
             owners.append(str(synapse_service_account_id))
+        owner_file_params = {
+            "Bucket": self.bucket.bucket_name,
+            "Key": OWNER_FILE,
+            "Body": ",".join(owners),
+            "ContentType": "text/plain",
+        }
+        if self.key:
+            # Synapse reads owner.txt with its own credentials to create a storage location.
+            # It holds only Synapse IDs, so it stays SSE-S3 (exempt from the KMS-only policy)
+            # rather than depending on Synapse's KMS permissions
+            owner_file_params["ServerSideEncryption"] = "AES256"
         put_owner_file = cr.AwsSdkCall(
             service="S3",
             action="putObject",
-            parameters={
-                "Bucket": self.bucket.bucket_name,
-                "Key": "owner.txt",
-                "Body": ",".join(owners),
-                "ContentType": "text/plain",
-            },
+            parameters=owner_file_params,
             # A new owner list replaces the resource, so the file is rewritten
             physical_resource_id=cr.PhysicalResourceId.of(f"owner.txt:{','.join(owners)}"),
         )
@@ -142,7 +177,7 @@ class SynapseBucketStack(cdk.Stack):
             on_create=put_owner_file,
             on_update=put_owner_file,
             policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
-                resources=[self.bucket.arn_for_objects("owner.txt")]
+                resources=[self.bucket.arn_for_objects(OWNER_FILE)]
             ),
             install_latest_aws_sdk=False,
         )
@@ -153,3 +188,78 @@ class SynapseBucketStack(cdk.Stack):
         cdk.CfnOutput(self, "BucketArn", value=self.bucket.bucket_arn)
         # Read by tools/setup_synapse_projects.py (from the CDK outputs), which must run as this user
         cdk.CfnOutput(self, "SynapseServiceAccountId", value=str(synapse_service_account_id))
+        if self.key:
+            cdk.CfnOutput(self, "KmsKeyArn", value=self.key.key_arn)
+
+    def _enforce_kms(
+        self, bucket_principals: list[iam.IPrincipal], key_users: list[iam.IPrincipal]
+    ) -> None:
+        """
+        Key policy grants for everyone the bucket policy lets read or write, and bucket policy
+        denials that keep every object (but owner.txt) under this bucket's key. A write without
+        encryption headers gets the bucket default, so plain uploads still work.
+        """
+        via_s3 = {"StringEquals": {"kms:ViaService": f"s3.{self.region}.amazonaws.com"}}
+        self.key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="BucketReadWriteViaS3",
+                principals=bucket_principals,
+                actions=["kms:Decrypt", "kms:GenerateDataKey*"],
+                resources=["*"],
+                conditions=via_s3,
+            )
+        )
+        if key_users:
+            self.key.add_to_resource_policy(
+                iam.PolicyStatement(
+                    sid="PipelineReadViaS3",
+                    principals=key_users,
+                    actions=["kms:Decrypt"],
+                    resources=["*"],
+                    conditions=via_s3,
+                )
+            )
+
+        objects = self.bucket.arn_for_objects("*")
+        # s3:PutObject also covers CreateMultipartUpload and CopyObject
+        self.bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyNonKmsEncryption",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                not_resources=[self.bucket.arn_for_objects(OWNER_FILE)],
+                conditions={
+                    "Null": {"s3:x-amz-server-side-encryption": "false"},
+                    "StringNotEquals": {"s3:x-amz-server-side-encryption": "aws:kms"},
+                },
+            )
+        )
+        self.bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyOtherKmsKey",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                resources=[objects],
+                conditions={
+                    "Null": {"s3:x-amz-server-side-encryption-aws-kms-key-id": "false"},
+                    "StringNotEquals": {
+                        "s3:x-amz-server-side-encryption-aws-kms-key-id": self.key.key_arn
+                    },
+                },
+            )
+        )
+        # SSE-C sends no x-amz-server-side-encryption header, so the first denial misses it
+        self.bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenySseC",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                resources=[objects],
+                conditions={
+                    "Null": {"s3:x-amz-server-side-encryption-customer-algorithm": "false"}
+                },
+            )
+        )
