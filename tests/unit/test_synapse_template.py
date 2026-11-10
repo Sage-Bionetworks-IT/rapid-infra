@@ -1,6 +1,13 @@
 import pytest
 
-from src.synapse_template import Ref, find_refs, load_template, parse_ref, validate_template
+from src.synapse_template import (
+    Ref,
+    find_refs,
+    load_template,
+    parse_ref,
+    project_names,
+    validate_template,
+)
 from src.utils import VALID_ENVS, load_context_config
 
 A, B = "$ref.BucketName.rapid-test-a", "$ref.BucketName.rapid-test-b"
@@ -144,3 +151,20 @@ def test_repo_templates_reference_configured_buckets(env):
     for i, project in enumerate(template["projects"]):
         for where, ref in find_refs(project, f"projects[{i}]"):
             assert ref.bucket in bucket_names, f"{env}: {where} → {ref.bucket}"
+
+
+def test_project_names_by_bucket_name():
+    template = {"projects": [{"name": "RAPID A", "bucket": A}, {"name": "RAPID B", "bucket": B}]}
+    buckets = [{"bucket_name": "rapid-test-a"}, {"bucket_name": "rapid-test-b"}]
+    assert project_names(template, buckets) == {
+        "rapid-test-a": "RAPID A",
+        "rapid-test-b": "RAPID B",
+    }
+
+
+def test_every_bucket_needs_a_project():
+    with pytest.raises(ValueError, match="BUCKETS rapid-test-b have no project"):
+        project_names(
+            {"projects": [{"name": "RAPID A", "bucket": A}]},
+            [{"bucket_name": "rapid-test-a"}, {"bucket_name": "rapid-test-b"}],
+        )

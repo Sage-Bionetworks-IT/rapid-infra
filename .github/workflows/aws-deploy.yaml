@@ -52,6 +52,9 @@ jobs:
           role-to-assume: ${{ inputs.role-to-assume }}
           role-session-name: ${{ inputs.role-session-name }}
           role-duration-seconds: ${{ inputs.role-duration-seconds }}
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       # The outputs (every stack's, changed or not) are the Synapse setup's input
       - run: >-
           cdk deploy --context env=${{ inputs.environment }} --all --concurrency 5
