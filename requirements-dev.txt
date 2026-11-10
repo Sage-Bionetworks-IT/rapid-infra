@@ -1,3 +1,5 @@
 pre-commit~=4.3
 pytest~=8.4
 -r tools/requirements.txt
+# The sync Lambda's own dependencies, for its unit tests
+-r src/lambda_sync/requirements.txt
