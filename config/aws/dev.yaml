@@ -1,8 +1,17 @@
 SYNAPSE:
-  # The Synapse user the sync will log in as. It is added to every bucket's owner.txt, since
-  # it must create the storage locations, and each bucket stack outputs it for
-  # tools/setup_synapse_projects.py, which must run as this user (SYNAPSE_AUTH_TOKEN secret).
+  # The Synapse user the sync Lambda logs in as (its PAT is in the pipeline stack's secret). It
+  # is added to every bucket's owner.txt, since it must create the storage locations, and each
+  # bucket stack outputs it for tools/setup_synapse_projects.py, which must run as this user
+  # (its PAT is also the SYNAPSE_AUTH_TOKEN GitHub secret).
   service_account_id: "3631461"  # rapid-dev-infra-service
+
+ALARM_EMAIL: "aws-rapid-dev@sagebase.org"
+
+SYNC:
+  sidecar_filename: sidecar.json
+  max_concurrency: 5
+  tolerated_failure_percentage: 0
+  results_retention_days: 30
 
 BUCKETS:
   # Globally unique S3 bucket name (lowercase, digits, dashes). Also names the stack

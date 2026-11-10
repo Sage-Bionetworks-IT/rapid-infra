@@ -85,7 +85,7 @@ def _read_file(path: Path) -> Dict[str, Any]:
 
 def validate_config(config: Dict[str, Any]) -> None:
     """Fail synth early, with the offending key, instead of at deploy time."""
-    for key in ("PROJECT_NAME", "SYNAPSE"):
+    for key in ("PROJECT_NAME", "SYNAPSE", "SYNC"):
         if key not in config:
             raise ValueError(f"Missing config key {key}")
 
@@ -98,6 +98,10 @@ def validate_config(config: Dict[str, Any]) -> None:
     account = config.get("AWS_ACCOUNT")
     if account is not None and not re.fullmatch(r"\d{12}", str(account)):
         raise ValueError(f"AWS_ACCOUNT must be a 12-digit AWS account ID, got '{account}'")
+
+    sidecar = config["SYNC"].get("sidecar_filename", "")
+    if not sidecar or "/" in sidecar:
+        raise ValueError(f"SYNC.sidecar_filename must be a file name, got '{sidecar}'")
 
     seen = set()
     for i, bucket in enumerate(config.get("BUCKETS") or []):
