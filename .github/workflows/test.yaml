@@ -37,4 +37,8 @@ jobs:
       - uses: actions/setup-node@v6
       - run: npm install -g aws-cdk
       - run: pip install -r requirements.txt
+      # The sync Lambda is bundled for arm64
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - run: cdk synth --context env=${{ inputs.environment }} --no-lookups --output ./cdk.out

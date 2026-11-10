@@ -1,3 +1,11 @@
+ALARM_EMAIL: "aws-rapid-dev@sagebase.org"
+
+SYNC:
+  sidecar_filename: sidecar.json
+  max_concurrency: 5
+  tolerated_failure_percentage: 0
+  results_retention_days: 30
+
 BUCKETS:
   # id: short name, used in the stack name (rapid-dev-bucket-example). Lowercase, digits, dashes
   - id: example
