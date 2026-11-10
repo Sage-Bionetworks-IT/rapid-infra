@@ -3,6 +3,7 @@ import json
 import aws_cdk as cdk
 import pytest
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_sns as sns
 from aws_cdk.assertions import Match, Template
 
 from src.synapse_template import load_template, project_names
@@ -39,9 +40,10 @@ def bucket_template(app):
 
 @pytest.fixture
 def kms_bucket_template(app):
-    # As app.py wires it: the pipeline's reader roles come from another stack
+    # As app.py wires it: the topic and the pipeline's reader roles come from another stack
     env = cdk.Environment(region="us-east-1")
     other = cdk.Stack(app, "test-pipeline-like", env=env)
+    topic = sns.Topic(other, "AlarmTopic")
     reader = iam.Role(other, "Reader", assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"))
     stack = SynapseBucketStack(
         app,
@@ -50,6 +52,7 @@ def kms_bucket_template(app):
         synapse_aws_account_id="325565585839",
         synapse_service_account_id="1234567",
         kms_key_users=[reader],
+        alarm_topic=topic,
         env=env,
     )
     return Template.from_stack(stack)
@@ -67,6 +70,22 @@ def pipeline_template(app):
         project_names={"rapid-test-a": "RAPID A", "rapid-test-b": "RAPID B"},
         sync_config=SYNC,
         alarm_email="alerts@example.org",
+    )
+    return Template.from_stack(stack)
+
+
+@pytest.fixture
+def audited_pipeline_template(app):
+    stack = SyncPipelineStack(
+        app,
+        "test-audited",
+        buckets=[
+            BUCKET,
+            {**BUCKET, "bucket_name": "rapid-test-b"},
+        ],
+        project_names={"rapid-test-a": "RAPID A", "rapid-test-b": "RAPID B"},
+        sync_config=SYNC,
+        s3_data_events_retention_days=365,
     )
     return Template.from_stack(stack)
 
@@ -163,7 +182,16 @@ def test_kms_bucket_uses_its_own_retained_rotated_key(kms_bucket_template):
 
 def test_kms_key_policy_grants_bucket_principals_and_pipeline_via_s3_only(kms_bucket_template):
     statements = _statements(kms_bucket_template, "AWS::KMS::Key", "KeyPolicy")
-    via_s3 = {"StringEquals": {"kms:ViaService": "s3.us-east-1.amazonaws.com"}}
+    # Only through S3, and only for this bucket (Bucket Key: bucket ARN; without: object ARN)
+    via_s3 = {
+        "StringEquals": {"kms:ViaService": "s3.us-east-1.amazonaws.com"},
+        "StringLike": {
+            "kms:EncryptionContext:aws:s3:arn": [
+                "arn:aws:s3:::rapid-test-a",
+                "arn:aws:s3:::rapid-test-a/*",
+            ]
+        },
+    }
     readwrite = statements["BucketReadWriteViaS3"]
     assert sorted(readwrite["Action"]) == ["kms:Decrypt", "kms:GenerateDataKey*"]
     assert readwrite["Condition"] == via_s3
@@ -173,6 +201,27 @@ def test_kms_key_policy_grants_bucket_principals_and_pipeline_via_s3_only(kms_bu
     assert pipeline["Action"] == "kms:Decrypt"
     assert pipeline["Condition"] == via_s3
     assert "Fn::ImportValue" in json.dumps(pipeline["Principal"])
+
+
+def test_kms_key_changes_email_the_alarm_topic(kms_bucket_template):
+    (key_id,) = kms_bucket_template.find_resources("AWS::KMS::Key")
+    (rule,) = kms_bucket_template.find_resources(
+        "AWS::Events::Rule", {"Properties": {"EventPattern": {"source": ["aws.kms"]}}}
+    ).values()
+    pattern = rule["Properties"]["EventPattern"]
+    assert pattern["detail-type"] == ["AWS API Call via CloudTrail"]
+    assert pattern["detail"]["resources"] == {"ARN": [{"Fn::GetAtt": [key_id, "Arn"]}]}
+    assert {"PutKeyPolicy", "DisableKey", "ScheduleKeyDeletion", "CreateGrant"} <= set(
+        pattern["detail"]["eventName"]
+    )
+    (target,) = rule["Properties"]["Targets"]
+    assert "Fn::ImportValue" in json.dumps(target["Arn"])
+
+
+def test_default_bucket_has_no_key_change_rule(bucket_template):
+    assert not bucket_template.find_resources(
+        "AWS::Events::Rule", {"Properties": {"EventPattern": {"source": ["aws.kms"]}}}
+    )
 
 
 def test_kms_bucket_denies_other_encryption_but_not_plain_writes(kms_bucket_template):
@@ -322,12 +371,16 @@ def test_repo_configs_synthesize(app, env, kms):
     config = load_context_config(env)
     if not config["BUCKETS"]:
         return
+    data_events = config.get("S3_DATA_EVENTS") or {}
     pipeline = SyncPipelineStack(
         app,
         "pipeline",
         buckets=config["BUCKETS"],
         project_names=project_names(load_template(f"config/synapse/{env}.yaml"), config["BUCKETS"]),
         sync_config=config["SYNC"],
+        s3_data_events_retention_days=(
+            data_events.get("retention_days") if data_events.get("enabled") else None
+        ),
     )
     for bucket in config["BUCKETS"]:
         SynapseBucketStack(
@@ -337,5 +390,61 @@ def test_repo_configs_synthesize(app, env, kms):
             synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
             synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
             kms_key_users=pipeline.object_readers,
+            alarm_topic=pipeline.alarm_topic,
         )
     app.synth()
+
+
+def test_no_data_events_trail_by_default(pipeline_template):
+    assert not pipeline_template.find_resources("AWS::CloudTrail::Trail")
+
+
+def test_data_events_trail_records_only_provider_bucket_objects(audited_pipeline_template):
+    (trail,) = audited_pipeline_template.find_resources("AWS::CloudTrail::Trail").values()
+    props = trail["Properties"]
+    assert props["TrailName"] == "test-audited-s3-data-events"
+    assert props["EnableLogFileValidation"] is True
+    assert props["IsMultiRegionTrail"] is False
+    assert props["IncludeGlobalServiceEvents"] is False
+    assert "Fn::GetAtt" in props["KMSKeyId"]
+    (selector,) = props["EventSelectors"]
+    assert selector["IncludeManagementEvents"] is False  # the org trail has those
+    assert selector["ReadWriteType"] == "All"
+    (resources,) = selector["DataResources"]
+    assert resources["Type"] == "AWS::S3::Object"
+    rendered = json.dumps(resources["Values"])
+    assert "rapid-test-a/" in rendered and "rapid-test-b/" in rendered
+    assert len(resources["Values"]) == 2
+
+
+def test_data_events_logs_kept_a_year_and_undeletable(audited_pipeline_template):
+    buckets = audited_pipeline_template.find_resources(
+        "AWS::S3::Bucket", {"Properties": {"LifecycleConfiguration": Match.any_value()}}
+    )
+    (log_bucket,) = [
+        b
+        for b in buckets.values()
+        if b["Properties"]["LifecycleConfiguration"]["Rules"][0]["ExpirationInDays"] == 365
+    ]
+    assert log_bucket["DeletionPolicy"] == "Retain"
+    policies = audited_pipeline_template.find_resources("AWS::S3::BucketPolicy")
+    statements = [
+        s for p in policies.values() for s in p["Properties"]["PolicyDocument"]["Statement"]
+    ]
+    (deny,) = [s for s in statements if s.get("Sid") == "DenyDeleteLogs"]
+    assert deny["Effect"] == "Deny" and deny["Action"] == "s3:DeleteObject*"
+    assert deny["Principal"] == {"AWS": "*"}
+
+
+def test_data_events_log_key_lets_only_this_trail_encrypt(audited_pipeline_template):
+    audited_pipeline_template.has_resource(
+        "AWS::KMS::Key",
+        {"DeletionPolicy": "Retain", "Properties": Match.object_like({"EnableKeyRotation": True})},
+    )
+    statements = _statements(audited_pipeline_template, "AWS::KMS::Key", "KeyPolicy")
+    encrypt = statements["CloudTrailEncryptLogs"]
+    assert encrypt["Principal"] == {"Service": "cloudtrail.amazonaws.com"}
+    assert encrypt["Action"] == "kms:GenerateDataKey*"
+    rendered = json.dumps(encrypt["Condition"])
+    assert "aws:SourceArn" in rendered and "kms:EncryptionContext:aws:cloudtrail:arn" in rendered
+    assert "trail/test-audited-s3-data-events" in rendered
