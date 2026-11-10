@@ -1,2 +1,17 @@
-# RAPID's dev account, deployed by CI on every push to the dev branch (deploy-dev.yaml).
-# Overrides config/base.yaml per top-level key.
+BUCKETS:
+  # id: short name, used in the stack name (rapid-dev-bucket-example). Lowercase, digits, dashes
+  - id: example
+    # Globally unique S3 bucket name
+    bucket_name: rapid-dev-example-data  # TODO
+    # The Synapse project files sync into
+    synapse_project_id: syn78529741  # TODO
+    # Synapse user or team IDs written to owner.txt (the service account is added for you)
+    synapse_owner_ids: [3627882]
+    # Optional. IAM principals (ARNs) with read/write on the objects
+    s3_user_arns: []
+    # Optional. IAM principals (ARNs) with full access to the bucket
+    s3_admin_arns: []
+    # Optional. IAM principals (ARNs) denied every s3:*Delete* on the objects
+    deny_delete_arns: []
+    # Optional, default false
+    versioned: false

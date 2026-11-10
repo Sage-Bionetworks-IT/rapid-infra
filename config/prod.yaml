@@ -1,2 +1,7 @@
-# RAPID's prod account, deployed by CI on every push to the prod branch (deploy-prod.yaml).
-# Overrides config/base.yaml per top-level key.
+BUCKETS:
+  # TODO: replace with the first real provider before the first dev → prod merge, which creates
+  # this bucket. Fields are documented in config/dev.yaml.
+  - id: example
+    bucket_name: rapid-prod-example-data  # TODO
+    synapse_project_id: syn00000001  # TODO
+    synapse_owner_ids: []
