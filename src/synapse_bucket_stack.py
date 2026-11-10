@@ -1,4 +1,6 @@
 import aws_cdk as cdk
+from aws_cdk import aws_events as events
+from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_s3 as s3
@@ -9,6 +11,20 @@ from constructs import Construct
 from src.alarms import lambda_error_alarms
 
 OWNER_FILE = "owner.txt"
+
+# KMS API calls on a bucket's key that email the alarm topic. CloudFormation makes some of them
+# (PutKeyPolicy) when a deploy changes the key, so an email outside a deploy is a manual change.
+# S3 never needs a grant for SSE-KMS, so any CreateGrant is unexpected
+KEY_CHANGE_EVENTS = [
+    "CancelKeyDeletion",
+    "CreateGrant",
+    "DeleteAlias",
+    "DisableKey",
+    "DisableKeyRotation",
+    "PutKeyPolicy",
+    "ScheduleKeyDeletion",
+    "UpdateAlias",
+]
 
 
 class SynapseBucketStack(cdk.Stack):
@@ -31,8 +47,9 @@ class SynapseBucketStack(cdk.Stack):
       customer-managed key (rotated yearly, retained with the bucket), with an S3 Bucket Key,
       and a bucket policy that denies writes asking for any other encryption or key. The key
       policy lets the bucket's read/write principals and `kms_key_users` (the pipeline Lambdas
-      that read objects) use it, only through S3. Synapse's STS credentials have no KMS
-      permissions, so STS contributors cannot write to such a bucket (README)
+      that read objects) use it, only through S3 and only for this bucket's objects. Changes
+      to the key email `alarm_topic`. Synapse's STS credentials have no KMS permissions, so
+      STS contributors cannot write to such a bucket (README)
     - An Errors alarm on the stack's Lambda (the owner.txt custom resource), emailing
       `alarm_topic`: the pipeline's, imported from it. The pipeline imports nothing from here,
       so bucket stacks still come and go freely
@@ -58,6 +75,7 @@ class SynapseBucketStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # The key is retained like the bucket: deleting it would make every object unreadable
+        self.bucket_name = bucket_config["bucket_name"]
         self.key = None
         if bucket_config.get("kms_encryption", False):
             self.key = kms.Key(
@@ -157,6 +175,8 @@ class SynapseBucketStack(cdk.Stack):
 
         if self.key:
             self._enforce_kms(rw_principals + admin_principals, kms_key_users or [])
+            if alarm_topic is not None:
+                self._alarm_on_key_changes(bucket_config["bucket_name"], alarm_topic)
 
         # owner.txt proves bucket ownership to Synapse when a storage location is created. The
         # creator must be listed, and only the storage location's creator may create file
@@ -211,7 +231,15 @@ class SynapseBucketStack(cdk.Stack):
         denials that keep every object (but owner.txt) under this bucket's key. A write without
         encryption headers gets the bucket default, so plain uploads still work.
         """
-        via_s3 = {"StringEquals": {"kms:ViaService": f"s3.{self.region}.amazonaws.com"}}
+        # Through S3, for this bucket's objects only: S3's encryption context is the bucket ARN
+        # with a Bucket Key, the object ARN without one. So a principal granted here cannot use
+        # the key for another bucket, even one of its own pointed at this key. (The ARN from the
+        # configured name: the bucket's own GetAtt would make key and bucket depend on each other)
+        bucket_arn = f"arn:{self.partition}:s3:::{self.bucket_name}"
+        via_s3 = {
+            "StringEquals": {"kms:ViaService": f"s3.{self.region}.amazonaws.com"},
+            "StringLike": {"kms:EncryptionContext:aws:s3:arn": [bucket_arn, f"{bucket_arn}/*"]},
+        }
         self.key.add_to_resource_policy(
             iam.PolicyStatement(
                 sid="BucketReadWriteViaS3",
@@ -262,7 +290,8 @@ class SynapseBucketStack(cdk.Stack):
                 },
             )
         )
-        # SSE-C sends no x-amz-server-side-encryption header, so the first denial misses it
+        # SSE-C sends no x-amz-server-side-encryption header, so the first denial misses it.
+        # (--sse aws:kms with no key ID gets the aws/s3 key, which DenyOtherKmsKey catches)
         self.bucket.add_to_resource_policy(
             iam.PolicyStatement(
                 sid="DenySseC",
@@ -274,4 +303,36 @@ class SynapseBucketStack(cdk.Stack):
                     "Null": {"s3:x-amz-server-side-encryption-customer-algorithm": "false"}
                 },
             )
+        )
+
+    def _alarm_on_key_changes(self, bucket_name: str, alarm_topic: sns.ITopic) -> None:
+        """Email every KEY_CHANGE_EVENTS call on the key (CloudTrail, via the org trail)."""
+        detail = events.EventField.from_path
+        events.Rule(
+            self,
+            "KeyChangeRule",
+            description=f"Email changes to the KMS key of s3://{bucket_name}",
+            event_pattern=events.EventPattern(
+                source=["aws.kms"],
+                detail_type=["AWS API Call via CloudTrail"],
+                detail={
+                    "eventSource": ["kms.amazonaws.com"],
+                    "eventName": KEY_CHANGE_EVENTS,
+                    "resources": {"ARN": [self.key.key_arn]},
+                },
+            ),
+            targets=[
+                targets.SnsTopic(
+                    alarm_topic,
+                    message=events.RuleTargetInput.from_multiline_text(
+                        f"KMS {detail('$.detail.eventName')} on the key of s3://{bucket_name}\n"
+                        f"Key: {self.key.key_arn}\n"
+                        f"By: {detail('$.detail.userIdentity.arn')}\n"
+                        f"At: {detail('$.detail.eventTime')}\n"
+                        f"Parameters: {detail('$.detail.requestParameters')}\n"
+                        "Expected during a deploy that changes the key (PutKeyPolicy); "
+                        "otherwise someone changed it by hand"
+                    ),
+                )
+            ],
         )

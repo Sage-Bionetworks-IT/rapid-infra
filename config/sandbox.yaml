@@ -23,6 +23,10 @@ SYNC:
 
 ALARM_EMAIL: ""
 
+# Off: the DNT dev account already has a trail logging every S3 data event (test-s3-trail)
+S3_DATA_EVENTS:
+  enabled: false
+
 BUCKETS:
   # id: short name, used in the stack name (rapid-dev-bucket-example). Lowercase, digits, dashes
   - id: test
