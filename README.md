@@ -187,6 +187,26 @@ service account always among them. Providers do not need to be in it: they only 
 account's locations (Synapse uploads, STS credentials), which takes permission on the project,
 not ownership of the bucket.
 
+### Synapse STS credentials are write-only
+
+Synapse's `read_write` STS session always allows `s3:GetObject` (and `DeleteObject`,
+`ListBucket`) next to the writes
+([`StsManagerImpl`](https://github.com/Sage-Bionetworks/Synapse-Repository-Services/blob/develop/services/repository-managers/src/main/java/org/sagebionetworks/repo/manager/sts/StsManagerImpl.java));
+Synapse has no write-only option. An STS location on a provider bucket would let anyone with
+its credentials read every file in it, whatever Synapse's sharing settings on the indexed files
+say, and hand that access on as pre-signed URLs. So each bucket policy denies STS sessions:
+
+- `DenyStsRead`: `s3:GetObject*` on the objects (which covers `HeadObject`)
+- `DenyStsPresigned`: any request authenticated by query string (`s3:authType` =
+  `REST-QUERY-STRING`), i.e. a pre-signed URL signed with STS credentials
+
+Both match Synapse STS sessions by account and session name (`aws:userid` like `*:sts-*`;
+Synapse names every session `sts-<user id>-<entity id>`), not by role ARN: Synapse's
+temporary-credentials role is created with every Synapse release, under a generated name, so
+its ARN and ID change. Deletes are still allowed (an STS session can delete any object in the
+bucket). The `bucket-owner-full-control` ACL Synapse's STS policy requires is not a factor:
+our buckets disable ACLs (`BucketOwnerEnforced`), so nobody can grant access through one.
+
 ## The sidecar
 
 The sidecar is the completion sentinel, like `manifest.ttl` in sagebrain-infra: write it after
