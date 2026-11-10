@@ -15,7 +15,8 @@ BUCKETS:
     # with the bucket as its only upload destination. Project names are global
     synapse_project_name: RAPID dev provider 1  # TODO
     # Optional, default "sts". The empty folder in the project that gives contributors
-    # read-write STS credentials for the bucket (files are indexed at the project root)
+    # STS credentials for the bucket, write-only on our buckets (files are indexed at the
+    # project root)
     sts_folder: sts
     # Synapse user or team IDs written to owner.txt (the service account is added for you)
     synapse_owner_ids: [3627882]

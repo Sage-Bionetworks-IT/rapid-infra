@@ -11,7 +11,8 @@ provider's Synapse project, as Synapse files that point at the S3 objects (no da
 Providers upload with **read-write STS credentials** that Synapse issues from an empty `sts`
 "shim" folder in their project ([Synapse STS](https://docs.synapse.org/synapse-docs/compute-directly-on-data-in-synapse-or-s3)),
 so they need a Synapse account with edit access to it, not AWS credentials.
-`tools/contribute.py` does the whole contribution in one command.
+`tools/contribute.py` does the whole contribution in one command. On our buckets those
+credentials are **write-only** (see "STS credentials are write-only").
 
 ```
 provider (contribute.py, STS credentials from <project>/sts)
@@ -209,9 +210,36 @@ note:
 - Credentials last 12 hours and cover the **whole bucket**: anywhere can be written, and an
   overwrite or delete of an already-indexed file leaves Synapse pointing at changed or missing
   data.
+- They **cannot read** objects (`GetObject`, and so `HeadObject`), nor sign pre-signed URLs
+  (below). Tools that check the destination before writing need that turned off, e.g. rclone
+  `--s3-no-head --no-check-dest`. Listing still works. Check a contribution in Synapse once
+  it is indexed.
 - Write the sidecar last.
 - Do not upload through the Synapse website into the `sts` folder: those files would land at
   keys Synapse chooses and live in the shim, not the index.
+
+### STS credentials are write-only
+
+Synapse's `read_write` STS session always allows `s3:GetObject` (and `DeleteObject`,
+`ListBucket`) next to the writes
+([`StsManagerImpl`](https://github.com/Sage-Bionetworks/Synapse-Repository-Services/blob/develop/services/repository-managers/src/main/java/org/sagebionetworks/repo/manager/sts/StsManagerImpl.java));
+Synapse has no write-only option. With our shim location on the whole bucket, any contributor
+could read every file in it, whatever Synapse's sharing settings on the indexed files say,
+and hand that access on as pre-signed URLs. So each bucket policy denies STS sessions:
+
+- `DenyStsRead`: `s3:GetObject*` on the objects (which covers `HeadObject`)
+- `DenyStsPresigned`: any request authenticated by query string (`s3:authType` =
+  `REST-QUERY-STRING`), i.e. a pre-signed URL signed with STS credentials
+
+Both match Synapse STS sessions by account and session name (`aws:userid` like `*:sts-*`;
+Synapse names every session `sts-<user id>-<entity id>`), not by role ARN: Synapse's
+temporary-credentials role is created with every Synapse release, under a generated name, so
+its ARN and ID change. Synapse's other sessions (its downloads and workers, `i-…` sessions)
+are untouched, so Synapse downloads of indexed files, which are pre-signed by Synapse itself,
+still work. The bucket-owner-full-control ACL is not a factor: our buckets disable ACLs
+(`BucketOwnerEnforced`), so a contributor can never grant access through one.
+
+Deletes are still allowed (an STS session can delete any object in the bucket).
 
 ### Why a shim
 
