@@ -13,7 +13,6 @@ jobs:
     needs: test
     uses: ./.github/workflows/aws-deploy.yaml
     with:
-      # TODO: the prod account's GitHub OIDC deploy role (Sage IT creates it)
-      role-to-assume: "arn:aws:iam::000000000000:role/sagebase-github-oidc-sage-bionetworks-rapid-infra"
+      role-to-assume: "arn:aws:iam::565839248283:role/sagebase-github-oidc-sage-bionetworks-rapid-prod-infra"
       role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
       environment: prod

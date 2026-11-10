@@ -41,8 +41,8 @@ feature branch ──PR──▶ dev ──PR──▶ prod
 - Branch from `dev`, open a PR into `dev`: `pr-check.yaml` runs tests, pre-commit and a synth
   of both environments. Merging deploys the dev account.
 - Promote with a `dev` → `prod` PR; merging deploys the prod account.
-- Set the OIDC role ARNs in `deploy-dev.yaml` / `deploy-prod.yaml` first (TODO). The roles come
-  from organizations-infra, and each account must be CDK-bootstrapped.
+- Each account's OIDC deploy role comes from organizations-infra and trusts only that account's
+  branch (`dev` or `prod`). Each account must be CDK-bootstrapped.
 - Until the first stack, a deploy only checks that the OIDC role is assumed
   (`aws sts get-caller-identity`): the CDK CLI fails on an app without stacks.
 - Since every stack deploys at once, ordering constraints between stacks need separate PRs,
