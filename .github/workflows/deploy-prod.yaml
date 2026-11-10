@@ -1,0 +1,19 @@
+name: deploy-prod
+
+on:
+  push:
+    branches: ['prod']
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yaml
+    with:
+      environment: prod
+  aws-deploy:
+    needs: test
+    uses: ./.github/workflows/aws-deploy.yaml
+    with:
+      # TODO: the prod account's GitHub OIDC deploy role (Sage IT creates it)
+      role-to-assume: "arn:aws:iam::000000000000:role/sagebase-github-oidc-sage-bionetworks-rapid-infra"
+      role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
+      environment: prod

@@ -1,0 +1,9 @@
+# Loaded for every environment, then shallow-merged with config/{env}.yaml (env wins per
+# top-level key: an env file's block replaces the same block here, so repeat any keys you still
+# want).
+
+# Stack names are {PROJECT_NAME}-{env}-...
+PROJECT_NAME: rapid
+
+TAGS:
+  CostCenter: NO PROGRAM / 000000

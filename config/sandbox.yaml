@@ -1,0 +1,6 @@
+# A personal test environment in the DNT dev account (profile dnt-dev-admin), not RAPID's dev.
+# Deployed from a laptop, never by CI:
+#   cdk deploy --context env=sandbox --all --profile dnt-dev-admin
+
+# Deploys with credentials for any other account fail
+AWS_ACCOUNT: "631692904429"

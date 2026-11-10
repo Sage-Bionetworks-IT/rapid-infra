@@ -1,0 +1,24 @@
+import os
+
+import aws_cdk as cdk
+
+from src.utils import load_context_config
+
+cdk_app = cdk.App()
+env_name = cdk_app.node.try_get_context("env") or "dev"
+config = load_context_config(env_name=env_name)
+STACK_NAME_PREFIX = f"{config['PROJECT_NAME']}-{env_name}"
+
+# From active credentials (OIDC in CI, AWS profile locally), unless the config pins an account:
+# then credentials for any other account fail the deploy instead of deploying there
+env = cdk.Environment(
+    account=str(config.get("AWS_ACCOUNT") or os.environ.get("CDK_DEFAULT_ACCOUNT") or "") or None,
+    region=os.environ.get("CDK_DEFAULT_REGION", "us-east-1"),
+)
+
+for key, value in (config.get("TAGS") or {}).items():
+    cdk.Tags.of(cdk_app).add(key, value)
+
+# No stacks yet: this only proves the CI deploy path (OIDC role, CDK bootstrap)
+
+cdk_app.synth()
