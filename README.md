@@ -42,7 +42,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 | Stack | Purpose |
 |---|---|
 | `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
-| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
+| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket, alarms and the S3 data-events trail. Shared by all buckets |
 
 Adding a provider is a config change: add a `BUCKETS` entry to `config/{env}.yaml`.
 
@@ -88,6 +88,7 @@ Some exist for Vanta's AWS tests, which read an alarm's top-level `MetricName` a
 - The sidecar rule's DLQ: one alarm when a message lands, another if it is still there an hour
   later. A new queue needs an `ApproximateAgeOfOldestMessage` alarm too (`dlq_age_alarm`, at
   most 5000 s). Vanta: "Messaging queue message age monitored"
+- A `kms_encryption` bucket emails any change to its key (see SSE-KMS)
 - `DATA_STORE_TAGS` (`VantaContainsUserData`, `VantaUserDataStored`) classify the provider
   buckets. S3 tag values allow only letters, digits, spaces and `+ - = . _ : / @`
 
@@ -101,8 +102,15 @@ Provider buckets use SSE-S3 by default, which Vanta's "User data in S3 is encryp
   keeps KMS calls to about one per bucket rather than one per object
 - The key policy lets the bucket's read/write principals (Synapse's AWS account,
   `s3_user_arns`, `s3_admin_arns`) and the pipeline's Prepare and Sync roles use the key,
-  only through S3 (`kms:ViaService`). The bucket stack imports those role ARNs from the
-  pipeline stack (the same direction as the alarm topic)
+  only through S3 (`kms:ViaService`) and only for this bucket's objects (the
+  `kms:EncryptionContext:aws:s3:arn` S3 sends), so nobody granted here can use it for another
+  bucket. The bucket stack imports those role ARNs from the pipeline stack (the same direction
+  as the alarm topic). Our account's IAM principals can also use it through the default
+  root statement: admins are few (JumpCloud) and everything deploys from this repo
+- Changes to the key email `ALARM_EMAIL`: `PutKeyPolicy`, `DisableKey`, `DisableKeyRotation`,
+  `ScheduleKeyDeletion`, `CancelKeyDeletion`, `CreateGrant`, `UpdateAlias`, `DeleteAlias`
+  (CloudTrail events from the org trail, via EventBridge). A deploy that changes the key
+  policy sends one too; any other is a change made by hand
 - The bucket policy denies a `PutObject` (and so a multipart upload or copy) that asks for
   SSE-S3, another KMS key or SSE-C. A write with no encryption headers gets the bucket
   default, so uploaders need no changes; they should not pass `--sse`. `--sse aws:kms` alone
@@ -130,6 +138,28 @@ own bucket name, Synapse project and `kms_encryption: true`. Switching an existi
 way is safe but only affects new objects: existing ones keep the encryption they were written
 with.
 
+
+### S3 data events (audit trail)
+
+The org trail (`sagebase-orgtrail`) records management events only. With `S3_DATA_EVENTS`
+(on in `base.yaml`), the pipeline stack adds a trail `rapid-{env}-pipeline-s3-data-events`
+that records every object-level call on the provider buckets: `GetObject`, `PutObject`,
+`DeleteObject`, copies and multipart uploads, with the caller, source IP and time.
+
+- No management events (the org trail has them, and a second copy is billed). Single
+  region, like the buckets
+- Calls with Synapse STS credentials name the Synapse user and entity in the session:
+  `assumed-role/...SynapseTempCredent.../sts-<user id>-<entity id>`. Downloads through Synapse
+  show Synapse's own role; Synapse's download records name the user
+- Logs are SSE-KMS under their own rotated key (only this trail may encrypt with it), with
+  log file validation (digest files), in a retained bucket that denies every delete; a
+  lifecycle rule expires them after `retention_days` (365)
+- A new `BUCKETS` entry is added to the trail automatically
+- About $0.10 per 100,000 events: logging a 10,000-file contribution costs about a cent
+
+Off in the sandbox, where the DNT dev account already logs every S3 data event.
+
+## Configuration
 
 `config/base.yaml` is always loaded, then deep-merged with the environment's config,
 `config/{env}.yaml` (`.yml` or `.json` also work, one file per env): the env file wins, nested

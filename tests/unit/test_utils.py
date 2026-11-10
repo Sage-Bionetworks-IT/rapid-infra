@@ -162,6 +162,8 @@ def test_missing_project_name_rejected():
         ({"BUCKETS__0__sts_folder": "a/b"}, "sts_folder"),
         ({"BUCKETS__0__sts_folder": "  "}, "sts_folder"),
         ({"BUCKETS__0__kms_encryption": "yes"}, "kms_encryption"),
+        ({"S3_DATA_EVENTS": {"enabled": True}}, "retention_days"),
+        ({"S3_DATA_EVENTS": {"enabled": True, "retention_days": 0}}, "retention_days"),
     ],
 )
 def test_invalid_config_rejected(changes, message):
@@ -174,3 +176,15 @@ def test_missing_bucket_field_rejected():
     del config["BUCKETS"][0]["synapse_project_name"]
     with pytest.raises(ValueError, match=r"BUCKETS\[0\].synapse_project_name is required"):
         validate_config(config)
+
+
+def test_data_events_off_needs_no_retention():
+    validate_config(_with(S3_DATA_EVENTS={"enabled": False}))
+
+
+@pytest.mark.parametrize("env, enabled", [("dev", True), ("prod", True), ("sandbox", False)])
+def test_data_events_on_for_rapid_off_for_sandbox(env, enabled):
+    data_events = load_context_config(env)["S3_DATA_EVENTS"]
+    assert bool(data_events.get("enabled")) is enabled
+    if enabled:
+        assert data_events["retention_days"] == 365

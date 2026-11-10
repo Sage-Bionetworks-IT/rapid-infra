@@ -23,6 +23,7 @@ for key, value in (config.get("TAGS") or {}).items():
 
 buckets = config.get("BUCKETS") or []
 lambda_errors = (config.get("LAMBDA_ERROR_ALARMS") or {}).get("errors_per_5_minutes", 1)
+data_events = config.get("S3_DATA_EVENTS") or {}
 
 # One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
 # reference, so bucket stacks come and go without export/import ordering. Bucket stacks import
@@ -35,6 +36,9 @@ if buckets:
         sync_config=config["SYNC"],
         alarm_email=config.get("ALARM_EMAIL") or "",
         lambda_errors_per_5_minutes=lambda_errors,
+        s3_data_events_retention_days=(
+            data_events.get("retention_days") if data_events.get("enabled") else None
+        ),
         env=env,
     )
 

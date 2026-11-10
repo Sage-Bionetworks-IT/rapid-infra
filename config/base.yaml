@@ -46,5 +46,11 @@ ALARM_EMAIL: ""
 LAMBDA_ERROR_ALARMS:
   errors_per_5_minutes: 1
 
+# A CloudTrail trail of S3 data events (every object read and write, with the caller) on the
+# provider buckets, in the pipeline stack. The org trail already records management events
+S3_DATA_EVENTS:
+  enabled: true
+  retention_days: 365
+
 # Synapse-connected buckets. One stack per entry; see config/dev.yaml for the fields.
 BUCKETS: []

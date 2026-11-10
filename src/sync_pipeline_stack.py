@@ -1,11 +1,13 @@
 import json
 
 import aws_cdk as cdk
+from aws_cdk import aws_cloudtrail as cloudtrail
 from aws_cdk import aws_cloudwatch as cw
 from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_kms as kms
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
@@ -47,6 +49,9 @@ class SyncPipelineStack(cdk.Stack):
     Re-uploading a sidecar re-runs the folder; unchanged files (same MD5) are left alone.
     Nested folders are included (ListObjectsV2 is recursive). Deleting from S3 does not delete
     from Synapse.
+
+    With `s3_data_events_retention_days`, a CloudTrail trail also records every object-level
+    call on the provider buckets (who read or wrote which object), kept that many days.
     """
 
     def __init__(
@@ -58,6 +63,8 @@ class SyncPipelineStack(cdk.Stack):
         alarm_email: str = "",
         # An Errors alarm on each Lambda fires at this many errors in 5 minutes (Vanta)
         lambda_errors_per_5_minutes: int = 1,
+        # Days to keep S3 data events for the provider buckets; None: no trail
+        s3_data_events_retention_days: int | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -356,6 +363,9 @@ class SyncPipelineStack(cdk.Stack):
             self, "SidecarRuleDLQAgeAlarm", self.rule_dlq, "A sidecar event", self.alarm_topic
         )
 
+        if s3_data_events_retention_days:
+            self._s3_data_events_trail(construct_id, bucket_names, s3_data_events_retention_days)
+
         # Last, so every Lambda in the stack is covered. A Sync error Step Functions retries
         # still counts, so a transient Synapse error can email before the retry succeeds.
         lambda_error_alarms(self, lambda_errors_per_5_minutes, self.alarm_topic)
@@ -363,3 +373,99 @@ class SyncPipelineStack(cdk.Stack):
         cdk.CfnOutput(self, "SyncStateMachineArn", value=self.state_machine.state_machine_arn)
         cdk.CfnOutput(self, "SynapsePatSecretArn", value=self.pat_secret.secret_arn)
         cdk.CfnOutput(self, "ResultsBucketName", value=self.results_bucket.bucket_name)
+
+    def _s3_data_events_trail(
+        self, construct_id: str, bucket_names: list[str], retention_days: int
+    ) -> None:
+        """
+        A trail of S3 data events only (GetObject, PutObject, DeleteObject, ...) on the provider
+        buckets: the org trail already records management events, and a second copy of those
+        is billed. STS calls carry the Synapse user and entity in the session name
+        (sts-<user>-<entity>). Log files are SSE-KMS under their own key and validated
+        (digest files); nobody can delete them before the lifecycle rule expires them.
+        """
+        trail_name = f"{construct_id}-s3-data-events"
+        # Built, not trail.trail_arn: the key policy would otherwise depend on the trail, which
+        # depends on the key
+        trail_arn = (
+            f"arn:{self.partition}:cloudtrail:{self.region}:{self.account}:trail/{trail_name}"
+        )
+        log_key = kms.Key(
+            self,
+            "AuditLogKey",
+            alias=f"alias/{construct_id}-audit-logs",
+            description=f"Encrypts the {trail_name} CloudTrail logs",
+            enable_key_rotation=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+        )
+        cloudtrail_principal = iam.ServicePrincipal("cloudtrail.amazonaws.com")
+        this_trail = {"StringEquals": {"aws:SourceArn": trail_arn}}
+        log_key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="CloudTrailEncryptLogs",
+                principals=[cloudtrail_principal],
+                actions=["kms:GenerateDataKey*"],
+                resources=["*"],
+                conditions={
+                    **this_trail,
+                    "StringLike": {"kms:EncryptionContext:aws:cloudtrail:arn": trail_arn},
+                },
+            )
+        )
+        log_key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="CloudTrailDescribeKey",
+                principals=[cloudtrail_principal],
+                actions=["kms:DescribeKey"],
+                resources=["*"],
+                conditions=this_trail,
+            )
+        )
+
+        # SSE-S3 by default: CloudTrail encrypts log files with the trail's key itself, and
+        # writes its digest files as SSE-S3
+        self.audit_log_bucket = s3.Bucket(
+            self,
+            "AuditLogBucket",
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            enforce_ssl=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            lifecycle_rules=[s3.LifecycleRule(expiration=cdk.Duration.days(retention_days))],
+        )
+        # Lifecycle expiration is not subject to the bucket policy
+        self.audit_log_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyDeleteLogs",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:DeleteObject*"],
+                resources=[self.audit_log_bucket.arn_for_objects("*")],
+            )
+        )
+
+        self.audit_trail = cloudtrail.Trail(
+            self,
+            "S3DataEventsTrail",
+            trail_name=trail_name,
+            bucket=self.audit_log_bucket,
+            encryption_key=log_key,
+            enable_file_validation=True,
+            management_events=cloudtrail.ReadWriteType.NONE,
+            # A multi-region trail must include global service (management) events
+            is_multi_region_trail=False,
+            include_global_service_events=False,
+            send_to_cloud_watch_logs=False,
+        )
+        self.audit_trail.add_s3_event_selector(
+            [
+                cloudtrail.S3EventSelector(
+                    bucket=s3.Bucket.from_bucket_name(self, f"Audited-{name}", name)
+                )
+                for name in bucket_names
+            ],
+            include_management_events=False,
+            read_write_type=cloudtrail.ReadWriteType.ALL,
+        )
+        cdk.CfnOutput(self, "AuditLogBucketName", value=self.audit_log_bucket.bucket_name)
