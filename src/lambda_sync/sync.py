@@ -2,16 +2,19 @@
 The sync execution's Synapse steps. Two handlers in one bundle:
 
 resolve_storage  once per execution, before the Map:
-    Input:  {"bucket", "project_name", ...}
-    Output: {"project_id", "storage_location_id"}
+    Input:  {"bucket", "project_name", "cse"?, ...}
+    Output: {"project_id", "storage_location_id", "encrypted_storage_location_id"}
     The bucket's project and its storage location on the bucket (indexer.resolve_storage),
+    and with client-side encryption (cse) the location on the encrypted bucket (else None),
     looked up once rather than per file. Never created here: tools/setup_synapse_projects.py
     sets them up after every deploy; missing, it raises IndexingError (not retried).
 
 handler          one item of the Distributed Map:
-    Input:  {"bucket", "key", "project_id", "storage_location_id"}
+    Input:  {"bucket", "key", "project_id", "storage_location_id", "content_md5"?, "staged"?}
     Output: {"key", "status": "created" | "updated" | "unchanged" | "skipped", "entity_id"?,
-             "reason"?}
+             "reason"?, "staged"?}
+    An encrypted file (the Encrypt step's output) carries its ciphertext MD5 and the staged
+    plaintext it came from; "staged" is passed through for the DeleteStaged step.
     An exception fails the item; Step Functions retries it, then counts it against the map's
     tolerated failure percentage.
 """
@@ -24,7 +27,7 @@ import posixpath
 import boto3
 import synapseclient
 
-from indexer import index_object
+from indexer import index_object, resolve_encrypted_location
 from indexer import resolve_storage as resolve_synapse_storage
 
 logger = logging.getLogger()
@@ -40,11 +43,20 @@ _syn = None
 def resolve_storage(event, _context):
     bucket, project_name = event["bucket"], event["project_name"]
     try:
-        project_id, location_id = resolve_synapse_storage(_synapse(), project_name, bucket)
+        syn = _synapse()
+        project_id, location_id = resolve_synapse_storage(syn, project_name, bucket)
+        encrypted_bucket = (event.get("cse") or {}).get("bucket")
+        encrypted_location_id = (
+            resolve_encrypted_location(syn, encrypted_bucket) if encrypted_bucket else None
+        )
     except Exception:
         _reset()
         raise
-    result = {"project_id": project_id, "storage_location_id": location_id}
+    result = {
+        "project_id": project_id,
+        "storage_location_id": location_id,
+        "encrypted_storage_location_id": encrypted_location_id,
+    }
     logger.info(
         json.dumps(
             {"event": "storage_location", "bucket": bucket, "project_name": project_name, **result}
@@ -71,11 +83,14 @@ def handler(event, _context):
             key=key,
             project_id=event["project_id"],
             storage_location_id=event["storage_location_id"],
+            content_md5=event.get("content_md5"),
         )
     except Exception:
         _reset()
         logger.exception(json.dumps({"event": "file_sync", "key": key, "status": "error"}))
         raise
+    if event.get("staged"):
+        result["staged"] = event["staged"]
     return _log({"key": key, **result})
 
 

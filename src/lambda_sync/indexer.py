@@ -90,6 +90,29 @@ def resolve_storage(syn: Synapse, project_name: str, bucket: str) -> tuple[str, 
     return project_id, resolve_storage_location(syn, project_id, bucket)
 
 
+def resolve_encrypted_location(syn: Synapse, bucket: str) -> int:
+    """
+    The service account's non-STS location on a client-side encryption bucket, where encrypted
+    files are indexed. It is on no project or folder (so nothing can be uploaded to the
+    encrypted bucket through Synapse, unencrypted), so it is found among the storage locations
+    the service account owns. Never created here: tools/setup_synapse_projects.py does.
+    """
+    # The caller's own, newest first
+    owned = wrap_async_to_sync(syn.rest_get_async("/storageLocation"))["list"]
+    for location in owned:
+        if (
+            location.get("concreteType", "").endswith(".ExternalS3StorageLocationSetting")
+            and location.get("bucket") == bucket
+            and not location.get("stsEnabled")
+            and not location.get("baseKey")
+        ):
+            return location["storageLocationId"]
+    raise IndexingError(
+        f"The service account has no storage location on s3://{bucket} (client-side encryption). "
+        "tools/setup_synapse_projects.py sets it up"
+    )
+
+
 def index_object(
     syn: Synapse,
     s3,
@@ -98,11 +121,15 @@ def index_object(
     key: str,
     project_id: str,
     storage_location_id: int,
+    content_md5: str | None = None,
 ) -> dict:
     """
     Make s3://bucket/key the file {dirname(key)}/{basename(key)} under the project, creating
     folders as needed. A file with the same name and MD5 is left alone; a different MD5 adds a
     new version.
+
+    content_md5 (hex), when the caller already knows it (the Encrypt step hashed the
+    ciphertext it wrote), saves reading a multipart object to compute it.
 
     Returns {"status": "created" | "updated" | "unchanged", "entity_id"}.
     """
@@ -111,7 +138,7 @@ def index_object(
         raise ValueError(f"'{key}' is a folder, not a file")
 
     head = s3.head_object(Bucket=bucket, Key=key)
-    md5 = object_md5(s3, bucket, key, head)
+    md5 = content_md5 or object_md5(s3, bucket, key, head)
     parent_id = ensure_folders(syn, project_id, posixpath.dirname(key))
 
     existing = None

@@ -20,10 +20,21 @@ class FakeS3:
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
 
 
+CSE = {"bucket": "provider-c-enc", "patterns": ["**/*.vcf"], "key_arn": "arn:k", "provider": "c"}
+
+
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
     monkeypatch.setenv("SIDECAR_FILENAME", "sidecar.json")
-    monkeypatch.setenv("BUCKET_PROJECTS", json.dumps({"provider-a": "RAPID A"}))
+    monkeypatch.setenv(
+        "BUCKET_TARGETS",
+        json.dumps(
+            {
+                "provider-a": {"project_name": "RAPID A", "cse": None},
+                "provider-c": {"project_name": "RAPID C", "cse": CSE},
+            }
+        ),
+    )
 
 
 def _event(key, bucket="provider-a"):
@@ -37,7 +48,14 @@ def test_valid_sidecar(monkeypatch):
         "prefix": "batch1/",
         "sidecar_key": "batch1/sidecar.json",
         "project_name": "RAPID A",
+        "cse": None,
     }
+
+
+def test_client_side_encryption_target_comes_from_config(monkeypatch):
+    body = json.dumps({"cse": None}).encode()
+    monkeypatch.setattr(prepare, "s3", FakeS3({("provider-c", "b/sidecar.json"): body}))
+    assert prepare.handler(_event("b/sidecar.json", "provider-c"), None)["cse"] == CSE
 
 
 def test_project_comes_from_config_not_sidecar(monkeypatch):

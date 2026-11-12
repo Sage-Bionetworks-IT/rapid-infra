@@ -56,3 +56,14 @@ BUCKETS:
     synapse_project_name: RAPID KMS Test
     synapse_owner_ids: [3627882]
     kms_encryption: true
+
+  # Client-side encryption trial (README: "Client-side encryption"): its own bucket and
+  # project (created by tools/setup_synapse_projects.py). Uncomment to try it
+  # - id: csetest
+  #   bucket_name: rapid-sandbox-csetest-data
+  #   synapse_project_name: RAPID CSE Test
+  #   synapse_owner_ids: [3627882]
+  #   client_side_encryption:
+  #     encrypted_bucket_name: rapid-sandbox-csetest-encrypted
+  #     patterns: ["**/*.vcf", "**/*.ndjson"]
+  #     decrypt_arns: []

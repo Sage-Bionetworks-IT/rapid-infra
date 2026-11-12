@@ -20,6 +20,7 @@ from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
 from src.alarms import dlq_age_alarm, lambda_error_alarms
+from src.utils import cse_key_alias
 
 _RUNTIME = lambda_.Runtime.PYTHON_3_13
 # synapseclient pulls in compiled wheels; build and run on one architecture
@@ -46,6 +47,12 @@ class SyncPipelineStack(cdk.Stack):
                                   → one sync Lambda per object (indexer.index_object)
                 Succeed         per-file results are written to the results bucket
 
+    For a bucket with `client_side_encryption`, each file of the Map goes through
+                               EncryptFile    a file matching the bucket's patterns is encrypted
+                                              into the encrypted bucket (else left as is)
+                               SyncFile       indexes the ciphertext (or the unmatched file)
+                               DeleteStaged   deletes the plaintext, once indexed
+
     Re-uploading a sidecar re-runs the folder; unchanged files (same MD5) are left alone.
     Nested folders are included (ListObjectsV2 is recursive). Deleting from S3 does not delete
     from Synapse.
@@ -71,9 +78,24 @@ class SyncPipelineStack(cdk.Stack):
 
         sidecar_filename = sync_config["sidecar_filename"]
         bucket_names = [b["bucket_name"] for b in buckets]
-        bucket_projects = {b["bucket_name"]: b["synapse_project_name"] for b in buckets}
+        cse_buckets = [b for b in buckets if b.get("client_side_encryption")]
+        bucket_targets = {
+            b["bucket_name"]: {
+                "project_name": b["synapse_project_name"],
+                "cse": self._cse_target(b),
+            }
+            for b in buckets
+        }
         bucket_arns = [f"arn:{self.partition}:s3:::{name}" for name in bucket_names]
         object_arns = [f"{arn}/*" for arn in bucket_arns]
+        encrypted_names = [
+            b["client_side_encryption"]["encrypted_bucket_name"] for b in cse_buckets
+        ]
+        encrypted_arns = [f"arn:{self.partition}:s3:::{name}" for name in encrypted_names]
+        encrypted_object_arns = [f"{arn}/*" for arn in encrypted_arns]
+        staging_object_arns = [
+            f"arn:{self.partition}:s3:::{b['bucket_name']}/*" for b in cse_buckets
+        ]
 
         # -------------------
         # Synapse service account PAT. Created with a placeholder value; set the real token
@@ -98,7 +120,7 @@ class SyncPipelineStack(cdk.Stack):
             code=lambda_.Code.from_asset("src/lambda_prepare"),
             environment={
                 "SIDECAR_FILENAME": sidecar_filename,
-                "BUCKET_PROJECTS": json.dumps(bucket_projects, sort_keys=True),
+                "BUCKET_TARGETS": json.dumps(bucket_targets, sort_keys=True),
             },
             timeout=cdk.Duration.seconds(30),
             memory_size=256,
@@ -152,7 +174,9 @@ class SyncPipelineStack(cdk.Stack):
         )
         self.pat_secret.grant_read(self.sync_fn)
         self.sync_fn.add_to_role_policy(
-            iam.PolicyStatement(actions=["s3:GetObject"], resources=object_arns)
+            iam.PolicyStatement(
+                actions=["s3:GetObject"], resources=object_arns + encrypted_object_arns
+            )
         )
 
         # Same bundle, once per execution: finds the project and its location on the bucket
@@ -172,9 +196,71 @@ class SyncPipelineStack(cdk.Stack):
         )
         self.pat_secret.grant_read(self.storage_fn)
 
-        # The roles that read bucket objects (sidecars, files to hash). A kms_encryption bucket's
-        # key policy lets them decrypt, so the pipeline needs no KMS grant of its own
+        # -------------------
+        # Client-side encryption (only with a client_side_encryption bucket): Encrypt streams a
+        # staged file into the encrypted bucket, DeleteStaged removes the plaintext once indexed.
+        # Separate roles: the one that deletes never reads, the one that reads never deletes.
+        # The CSE key's policy (bucket stack) grants Encrypt its kms:GenerateDataKey.
+        # -------------------
+        self.encrypt_fn = None
+        self.delete_staged_fn = None
+        if cse_buckets:
+            self.encrypt_fn = lambda_.Function(
+                self,
+                "EncryptFunction",
+                runtime=_RUNTIME,
+                architecture=_ARCH,
+                handler="encrypt.handler",
+                code=lambda_.Code.from_asset("src/lambda_encrypt", bundling=bundling),
+                environment={"SIDECAR_FILENAME": sidecar_filename},
+                # Streams up to MAX_BYTES (10 GiB) through; more memory is more CPU
+                timeout=cdk.Duration.minutes(15),
+                memory_size=3008,
+                log_group=logs.LogGroup(
+                    self, "EncryptFunctionLogs", retention=logs.RetentionDays.THREE_MONTHS
+                ),
+            )
+            self.encrypt_fn.add_to_role_policy(
+                iam.PolicyStatement(actions=["s3:GetObject"], resources=staging_object_arns)
+            )
+            self.encrypt_fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    # GetObject: the HEAD of an earlier ciphertext, to skip re-encrypting it
+                    actions=["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"],
+                    resources=encrypted_object_arns,
+                )
+            )
+            # So that HEAD of a missing ciphertext is a 404, not a 403
+            self.encrypt_fn.add_to_role_policy(
+                iam.PolicyStatement(actions=["s3:ListBucket"], resources=encrypted_arns)
+            )
+
+            self.delete_staged_fn = lambda_.Function(
+                self,
+                "DeleteStagedFunction",
+                runtime=_RUNTIME,
+                architecture=_ARCH,
+                handler="encrypt.delete_staged",
+                code=lambda_.Code.from_asset("src/lambda_encrypt", bundling=bundling),
+                environment={"SIDECAR_FILENAME": sidecar_filename},
+                timeout=cdk.Duration.seconds(30),
+                memory_size=256,
+                log_group=logs.LogGroup(
+                    self, "DeleteStagedFunctionLogs", retention=logs.RetentionDays.THREE_MONTHS
+                ),
+            )
+            self.delete_staged_fn.add_to_role_policy(
+                iam.PolicyStatement(actions=["s3:DeleteObject"], resources=staging_object_arns)
+            )
+
+        # The roles that read bucket objects (sidecars, files to hash, files to encrypt). A
+        # kms_encryption bucket's key policy lets them decrypt, so the pipeline needs no KMS
+        # grant of its own
         self.object_readers = [self.prepare_fn.role, self.sync_fn.role]
+        if self.encrypt_fn:
+            self.object_readers.append(self.encrypt_fn.role)
+        # The only writer of the encrypted buckets (their bucket policy), and the CSE keys' user
+        self.cse_encryptor = self.encrypt_fn.role if self.encrypt_fn else None
 
         # -------------------
         # Per-run results (one JSON result per file), written by the Distributed Map
@@ -234,6 +320,21 @@ class SyncPipelineStack(cdk.Stack):
             max_attempts=3,
         )
 
+        item_selector = {
+            "bucket": sfn.JsonPath.string_at("$.bucket"),
+            "project_id": sfn.JsonPath.string_at("$.storage.project_id"),
+            "storage_location_id": sfn.JsonPath.number_at("$.storage.storage_location_id"),
+            "key": sfn.JsonPath.string_at("$$.Map.Item.Value.Key"),
+        }
+        item_processor = sync_file
+        if cse_buckets:
+            # null for a bucket without client-side encryption
+            item_selector["cse"] = sfn.JsonPath.object_at("$.cse")
+            item_selector["encrypted_storage_location_id"] = sfn.JsonPath.number_at(
+                "$.storage.encrypted_storage_location_id"
+            )
+            item_processor = self._encrypting_item_processor(sync_file)
+
         sync_files = sfn.DistributedMap(
             self,
             "SyncFiles",
@@ -241,19 +342,14 @@ class SyncPipelineStack(cdk.Stack):
                 bucket_name_path=sfn.JsonPath.string_at("$.bucket"),
                 prefix=sfn.JsonPath.string_at("$.prefix"),
             ),
-            item_selector={
-                "bucket": sfn.JsonPath.string_at("$.bucket"),
-                "project_id": sfn.JsonPath.string_at("$.storage.project_id"),
-                "storage_location_id": sfn.JsonPath.number_at("$.storage.storage_location_id"),
-                "key": sfn.JsonPath.string_at("$$.Map.Item.Value.Key"),
-            },
+            item_selector=item_selector,
             max_concurrency=sync_config["max_concurrency"],
             tolerated_failure_percentage=sync_config["tolerated_failure_percentage"],
             # Without a writer, every file's result goes into the state output (256 KiB limit)
             result_writer_v2=sfn.ResultWriterV2(bucket=self.results_bucket, prefix="runs"),
             result_path="$.results",
         )
-        sync_files.item_processor(sync_file)
+        sync_files.item_processor(item_processor)
 
         definition = (
             prepare.next(resolve_storage).next(sync_files).next(sfn.Succeed(self, "Synced"))
@@ -364,7 +460,9 @@ class SyncPipelineStack(cdk.Stack):
         )
 
         if s3_data_events_retention_days:
-            self._s3_data_events_trail(construct_id, bucket_names, s3_data_events_retention_days)
+            self._s3_data_events_trail(
+                construct_id, bucket_names + encrypted_names, s3_data_events_retention_days
+            )
 
         # Last, so every Lambda in the stack is covered. A Sync error Step Functions retries
         # still counts, so a transient Synapse error can email before the retry succeeds.
@@ -373,6 +471,65 @@ class SyncPipelineStack(cdk.Stack):
         cdk.CfnOutput(self, "SyncStateMachineArn", value=self.state_machine.state_machine_arn)
         cdk.CfnOutput(self, "SynapsePatSecretArn", value=self.pat_secret.secret_arn)
         cdk.CfnOutput(self, "ResultsBucketName", value=self.results_bucket.bucket_name)
+
+    def _cse_target(self, bucket: dict) -> dict | None:
+        """What the Encrypt step needs for a bucket's files: from config only (the key by its
+        alias ARN), so this stack imports nothing from the bucket stacks."""
+        cse = bucket.get("client_side_encryption")
+        if not cse:
+            return None
+        alias = cse_key_alias(cse["encrypted_bucket_name"])
+        return {
+            "bucket": cse["encrypted_bucket_name"],
+            "patterns": cse["patterns"],
+            "key_arn": f"arn:{self.partition}:kms:{self.region}:{self.account}:{alias}",
+            "provider": bucket["id"],
+        }
+
+    def _encrypting_item_processor(self, sync_file: tasks.LambdaInvoke) -> sfn.IChainable:
+        """
+        One file of a sync execution with client-side encryption buckets in the app:
+
+            NeedsEncryption ─ cse ──► EncryptFile ─► SyncFile ─► Staged ─ staged ─► DeleteStaged
+                            └ null ─────────────────► SyncFile    └ else ─► FileDone
+
+        EncryptFile returns the file unchanged unless a pattern matches, so SyncFile indexes
+        either the ciphertext or the staged file. The plaintext is deleted only after Synapse
+        indexed its ciphertext: any failure before leaves it for a rerun.
+        """
+        encrypt_file = tasks.LambdaInvoke(
+            self, "EncryptFile", lambda_function=self.encrypt_fn, payload_response_only=True
+        )
+        # The first matching retrier applies: a file over the size limit fails at once
+        encrypt_file.add_retry(errors=["FileTooLargeError"], max_attempts=0)
+        encrypt_file.add_retry(
+            errors=["States.TaskFailed"],
+            interval=cdk.Duration.seconds(5),
+            backoff_rate=2.0,
+            max_attempts=3,
+        )
+        delete_staged = tasks.LambdaInvoke(
+            self,
+            "DeleteStaged",
+            lambda_function=self.delete_staged_fn,
+            payload_response_only=True,
+        )
+        delete_staged.add_retry(
+            errors=["States.TaskFailed"],
+            interval=cdk.Duration.seconds(5),
+            backoff_rate=2.0,
+            max_attempts=3,
+        )
+        sync_file.next(
+            sfn.Choice(self, "Staged")
+            .when(sfn.Condition.is_present("$.staged"), delete_staged)
+            .otherwise(sfn.Succeed(self, "FileDone"))
+        )
+        return (
+            sfn.Choice(self, "NeedsEncryption")
+            .when(sfn.Condition.is_not_null("$.cse"), encrypt_file.next(sync_file))
+            .otherwise(sync_file)
+        )
 
     def _s3_data_events_trail(
         self, construct_id: str, bucket_names: list[str], retention_days: int
