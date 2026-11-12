@@ -1,6 +1,9 @@
 # rapid-infra
 
-AWS CDK (Python) infrastructure for RAPID data ingestion into Synapse. Each data provider gets
+This is the RAPID infra repo, where we deploy the AWS resources needed for RAPID at scale, with
+the AWS CDK (Python).
+
+RAPID data ingestion into Synapse is one of the resources deployed here. Each data provider gets
 its own S3 bucket, connected to its own Synapse project. Providers upload a folder of files,
 then a `sidecar.json` in it; the sidecar's arrival indexes every file in the folder into the
 provider's Synapse project, as Synapse files that point at the S3 objects (no data is copied).
