@@ -6,14 +6,27 @@ then a `sidecar.json` in it; the sidecar's arrival indexes every file in the fol
 provider's Synapse project, as Synapse files that point at the S3 objects (no data is copied).
 
 This first version has no stacks yet: only the configuration, CI and the deploy path into each
-environment's AWS account.
+environment's AWS account. The skeleton follows Sage IT's
+[aws-cdk-ecs-infra-template](https://github.com/Sage-Bionetworks-IT/aws-cdk-ecs-infra-template)
+(config loading, CI workflows, pre-commit, dev container), without its ECS stacks.
+
+AWS CDK projects need each account
+[bootstrapped](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html#getting_started_bootstrap)
+before deployment; Sage IT bootstraps every account in the AWS Organization when creating it.
 
 ## Configuration
 
-`config/base.yaml` is always loaded, then shallow-merged with `config/{dev,prod}.yaml` (the env
-file replaces whole top-level keys). Synth validates it.
+`config/base.yaml` is always loaded, then deep-merged with the environment's config,
+`config/{env}.yaml` (`.yml` or `.json` also work, one file per env): the env file wins, nested
+mappings merge key by key so an env file only lists the keys it changes, and lists are replaced.
+Synth validates the result.
 
 ## Development
+
+The repo has a [dev container](https://containers.dev/) (`.devcontainer/`) with Python, Node,
+the AWS CLI and the CDK CLI; open the folder in it from VS Code ("Dev Containers: Open Folder in
+Container...") or in a GitHub Codespace. Outside it, `./tools/setup.sh` installs the CDK CLI,
+creates `.venv` and installs the pre-commit hooks, or by hand:
 
 ```console
 uv venv --python 3.13 .venv && source .venv/bin/activate   # or python3.13 -m venv .venv
@@ -39,8 +52,9 @@ feature branch ──PR──▶ dev ──PR──▶ prod
 ```
 
 - Branch from `dev`, open a PR into `dev`: `pr-check.yaml` runs tests, pre-commit and a synth
-  of both environments. Merging deploys the dev account.
-- Promote with a `dev` → `prod` PR; merging deploys the prod account.
+  of the dev environment. Merging deploys the dev account.
+- Promote with a `dev` → `prod` PR: `pr-check.yaml` runs the same checks against the prod
+  environment, and merging deploys the prod account.
 - Each account's OIDC deploy role comes from organizations-infra and trusts only that account's
   branch (`dev` or `prod`). Each account must be CDK-bootstrapped.
 - Until the first stack, a deploy only checks that the OIDC role is assumed
@@ -65,6 +79,6 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 1. A stage AWS account and its GitHub OIDC deploy role (Sage IT)
 2. `config/stage.yaml`
 3. `"stage"` in `VALID_ENVS` (`src/utils.py`)
-4. `.github/workflows/deploy-stage.yaml` (a copy of `deploy-dev.yaml`), a `test-stage` job in
-   `pr-check.yaml`, and a `stage` branch
+4. `.github/workflows/deploy-stage.yaml` (a copy of `deploy-dev.yaml`), a `stage` branch, and
+   `stage` as the environment for PRs into `prod` in `pr-check.yaml`
 5. Promote `dev` → `stage` → `prod`
