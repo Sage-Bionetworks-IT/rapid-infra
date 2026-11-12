@@ -32,6 +32,7 @@ class FakeSynapse:
         self.upload_locations = None  # None: no project setting
         self.locations = {}  # id -> {"bucket", "type"}
         self.readable = set()  # location ids this user created (the only ones it can get)
+        self.owned = []  # GET /storageLocation: the locations this user owns, newest first
         self.folder_stores = []  # (name, create_or_update)
         self._next = 100
 
@@ -41,6 +42,10 @@ class FakeSynapse:
 
     def by_id(self, entity_id):
         return next(e for e in self.entities.values() if e["id"] == entity_id)
+
+    async def rest_get_async(self, uri):
+        assert uri == "/storageLocation"
+        return {"list": self.owned}
 
     async def rest_post_async(self, uri, body=None, endpoint=None):
         assert uri == "/externalFileHandle/s3" and endpoint == self.fileHandleEndpoint
@@ -316,6 +321,25 @@ def test_folder_created_concurrently_is_looked_up_not_updated(syn):
     assert syn.entities[(raced["id"], "data.csv")]
 
 
+def test_given_md5_is_used_without_reading_the_object(syn):
+    # The Encrypt step hashed the (multipart) ciphertext it wrote
+    s3 = FakeS3(b"ciphertext", etag="abc-3")
+    md5 = hashlib.md5(b"ciphertext").hexdigest()
+    indexer.index_object(
+        syn,
+        s3,
+        bucket="provider-a-enc",
+        key="batch1/data.vcf.encrypted",
+        project_id="syn1",
+        storage_location_id=43,
+        content_md5=md5,
+    )
+    (handle,) = syn.handles.values()
+    assert handle["contentMd5"] == md5
+    assert handle["fileName"] == "data.vcf.encrypted"
+    assert s3.gets == 0
+
+
 @pytest.mark.parametrize(
     "s3, reads",
     [
@@ -394,3 +418,31 @@ def test_resolve_storage_never_creates_the_location(syn, locations):
     with pytest.raises(indexer.IndexingError, match="setup_synapse_projects.py"):
         indexer.resolve_storage(syn, "RAPID A", "provider-a")
     assert syn.upload_locations == locations and syn.locations == {}
+
+
+def _owned(syn, location_id, bucket, sts=False, base_key=None, concrete="ExternalS3"):
+    syn.owned.append(
+        {
+            "storageLocationId": location_id,
+            "concreteType": f"org.sagebionetworks.repo.model.project.{concrete}StorageLocationSetting",
+            "bucket": bucket,
+            "stsEnabled": sts or None,
+            "baseKey": base_key,
+        }
+    )
+
+
+def test_resolve_encrypted_location_finds_the_service_accounts(syn):
+    _owned(syn, 50, "provider-a-enc", sts=True)  # STS: not for the index
+    _owned(syn, 51, "provider-a-enc", base_key="x")
+    _owned(syn, 52, "other-enc")
+    _owned(syn, 53, None, concrete="S3")  # Synapse storage
+    _owned(syn, 54, "provider-a-enc")
+    assert indexer.resolve_encrypted_location(syn, "provider-a-enc") == 54
+
+
+def test_resolve_encrypted_location_never_creates_it(syn):
+    _owned(syn, 52, "other-enc")
+    with pytest.raises(indexer.IndexingError, match="setup_synapse_projects.py"):
+        indexer.resolve_encrypted_location(syn, "provider-a-enc")
+    assert syn.locations == {}

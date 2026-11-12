@@ -3,9 +3,11 @@ First step of a sync execution: turn a sidecar's S3 "Object Created" event into 
 sync and its Synapse project.
 
 Input (the EventBridge event's detail):  {"bucket": {"name": ...}, "object": {"key": ...}, ...}
-Output: {"bucket", "prefix", "sidecar_key", "project_name"}
+Output: {"bucket", "prefix", "sidecar_key", "project_name", "cse"}
+        cse is the bucket's client-side encryption target ({"bucket", "patterns", "key_arn",
+        "provider"}), or null when it has none
 
-The project comes from config (BUCKET_PROJECTS: bucket → project name), never from the
+The project comes from config (BUCKET_TARGETS: bucket → project name and cse), never from the
 sidecar: anyone who can write to the bucket could otherwise point the service account at any
 project it can edit.
 """
@@ -31,9 +33,9 @@ def handler(event, _context):
     bucket = event["bucket"]["name"]
     key = event["object"]["key"]
     sidecar_name = os.environ["SIDECAR_FILENAME"]
-    projects = json.loads(os.environ["BUCKET_PROJECTS"])
+    targets = json.loads(os.environ["BUCKET_TARGETS"])
 
-    if bucket not in projects:
+    if bucket not in targets:
         raise InvalidSidecarError(f"Bucket '{bucket}' has no Synapse project configured")
 
     folder, _, name = key.rpartition("/")
@@ -54,7 +56,8 @@ def handler(event, _context):
         "bucket": bucket,
         "prefix": key.rpartition("/")[0] + "/",
         "sidecar_key": key,
-        "project_name": projects[bucket],
+        "project_name": targets[bucket]["project_name"],
+        "cse": targets[bucket].get("cse"),
     }
     logger.info(json.dumps({"event": "sync_prepared", **result}))
     return result

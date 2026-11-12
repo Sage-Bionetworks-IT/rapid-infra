@@ -194,10 +194,26 @@ def test_creates_the_project_on_the_deployed_bucket_with_the_sts_shim(syn):
         "storage_location_id": location_id,
         "sts_folder_id": sts_folder_id,
         "sts_location_id": sts_location_id,
+        "encrypted_storage_location_id": None,
     }
     assert syn.settings[project_id] == [location_id]
     assert syn.settings[sts_folder_id] == [sts_location_id]
     assert syn.children(sts_folder_id) == {}
+
+
+def test_client_side_encryption_location_is_on_no_project_or_folder(syn):
+    cse_bucket = {**BUCKET, "EncryptedBucketName": "rapid-test-a-enc"}
+    result = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, cse_bucket)
+
+    encrypted = syn.locations[("rapid-test-a-enc", False)]
+    assert result["encrypted_storage_location_id"] == encrypted
+    # Only file handles use it: nothing can be uploaded there through Synapse
+    assert all(encrypted not in locations for locations in syn.settings.values())
+
+
+def test_no_encrypted_location_without_client_side_encryption(syn):
+    result = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
+    assert result["encrypted_storage_location_id"] is None
 
 
 def test_custom_sts_folder_name(syn):

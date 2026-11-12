@@ -14,6 +14,16 @@ VALID_ENVS = {"dev", "prod", "sandbox"}
 _BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 _SYNAPSE_PRINCIPAL = re.compile(r"^\d+$")
 
+
+def cse_key_alias(encrypted_bucket_name: str) -> str:
+    """
+    The alias of a client-side encryption bucket's KMS key. From config alone, so the pipeline
+    (which encrypts with it) and the bucket stack (which owns it) agree without a cross-stack
+    reference. Bucket names are globally unique; aliases allow no dots.
+    """
+    return f"alias/cse/{encrypted_bucket_name.replace('.', '-')}"
+
+
 _BUCKET_LIST_FIELDS = ("synapse_owner_ids", "s3_user_arns", "s3_admin_arns", "deny_delete_arns")
 
 
@@ -111,15 +121,31 @@ def validate_config(config: Dict[str, Any]) -> None:
     if not sidecar or "/" in sidecar:
         raise ValueError(f"SYNC.sidecar_filename must be a file name, got '{sidecar}'")
 
-    seen = set()
-    for i, bucket in enumerate(config.get("BUCKETS") or []):
+    _validate_buckets(config.get("BUCKETS") or [])
+
+
+def _validate_buckets(buckets: list) -> None:
+    names = set()
+    for i, bucket in enumerate(buckets):
         where = f"BUCKETS[{i}]"
         _validate_bucket(where, bucket)
-        if bucket["bucket_name"] in seen:
+        if "client_side_encryption" in bucket:
+            _validate_cse(f"{where}.client_side_encryption", bucket)
+        if bucket["bucket_name"] in names:
             raise ValueError(
                 f"{where}.bucket_name '{bucket['bucket_name']}' is used by another bucket"
             )
-        seen.add(bucket["bucket_name"])
+        names.add(bucket["bucket_name"])
+    # An encrypted bucket's name is a bucket name too
+    for i, bucket in enumerate(buckets):
+        encrypted = (bucket.get("client_side_encryption") or {}).get("encrypted_bucket_name")
+        if encrypted in names:
+            raise ValueError(
+                f"BUCKETS[{i}].client_side_encryption.encrypted_bucket_name '{encrypted}' "
+                "is used by another bucket"
+            )
+        if encrypted is not None:
+            names.add(encrypted)
 
 
 def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
@@ -137,3 +163,28 @@ def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
     for owner in bucket.get("synapse_owner_ids", []):
         if not _SYNAPSE_PRINCIPAL.match(str(owner)):
             raise ValueError(f"{where}.synapse_owner_ids: '{owner}' is not a numeric Synapse ID")
+
+
+def _validate_cse(where: str, bucket: Dict[str, Any]) -> None:
+    cse = bucket["client_side_encryption"]
+    if not isinstance(cse, dict):
+        raise ValueError(f"{where} must be a mapping")
+    unknown = set(cse) - {"encrypted_bucket_name", "patterns", "decrypt_arns"}
+    if unknown:
+        raise ValueError(f"{where} has unknown keys: {', '.join(sorted(unknown))}")
+    name = cse.get("encrypted_bucket_name")
+    if not isinstance(name, str) or not _BUCKET_NAME.match(name):
+        raise ValueError(f"{where}.encrypted_bucket_name '{name}' is not a valid S3 bucket name")
+    patterns = cse.get("patterns")
+    if (
+        not isinstance(patterns, list)
+        or not patterns
+        or not all(isinstance(p, str) and p.strip() for p in patterns)
+    ):
+        raise ValueError(f"{where}.patterns must be a non-empty list of globs")
+    if not isinstance(cse.get("decrypt_arns", []), list):
+        raise ValueError(f"{where}.decrypt_arns must be a list")
+    if bucket.get("versioned", False):
+        # The plaintext is deleted once encrypted; versioning would keep it as a noncurrent
+        # version
+        raise ValueError(f"{where} requires versioned: false on the (staging) bucket")

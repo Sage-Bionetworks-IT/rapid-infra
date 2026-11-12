@@ -18,6 +18,10 @@ idempotently, as the sync service account:
 3. The STS "shim" folder (the project's sts_folder, default "sts"): empty, with an STS location
    on the whole bucket, from which contributors with edit access get read-write STS credentials.
    Logs the contribute.py command to send the provider.
+   For a client-side encryption bucket (its stack outputs EncryptedBucketName), also the
+   non-STS location on the encrypted bucket where encrypted files are indexed: on no project or
+   folder, so nothing can be uploaded there through Synapse (unencrypted). The pipeline only
+   looks it up.
 4. Its sharing settings, made to match the project's acl, as CloudFormation does a stack's
    resources: each principal in it gets exactly its permission level, and every other principal
    (anyone shared by hand, public access) is removed, except the service account.
@@ -147,6 +151,10 @@ def setup_project(syn, current_user: str, project: dict, bucket: dict) -> dict:
         sts_folder_id = find_entity_id(sts_folder, project_id, synapse_client=syn)
         sts_folder_id = sts_folder_id or _create_folder(syn, sts_folder, project_id)
         sts_location_id = ensure_only_location(syn, Folder(id=sts_folder_id), bucket_name, sts=True)
+        encrypted_bucket = bucket.get("EncryptedBucketName")
+        encrypted_location_id = (
+            ensure_location(syn, encrypted_bucket, sts=False) if encrypted_bucket else None
+        )
         acl_changes = ensure_acl(syn, Project(id=project_id), project.get("acl", []), current_user)
         apply_project_template(syn, project_id, project)
     except SynapseHTTPError as e:
@@ -178,6 +186,7 @@ def setup_project(syn, current_user: str, project: dict, bucket: dict) -> dict:
         "storage_location_id": location_id,
         "sts_folder_id": sts_folder_id,
         "sts_location_id": sts_location_id,
+        "encrypted_storage_location_id": encrypted_location_id,
     }
 
 
@@ -207,19 +216,27 @@ def ensure_project(syn, name: str) -> str:
         raise
 
 
-def ensure_only_location(syn, container, bucket: str, sts: bool = False) -> int:
+def ensure_location(syn, bucket: str, sts: bool) -> int:
     """
-    Make the service account's external S3 location on the bucket (STS-enabled or not) the
-    container's only upload destination; returns its ID. StorageLocation.store() returns this
-    user's existing identical location rather than a duplicate.
+    The service account's external S3 location on the bucket. StorageLocation.store() returns
+    this user's existing identical location rather than a duplicate. Synapse checks the
+    bucket's owner.txt lists the service account.
     """
-    location_id = (
+    return (
         StorageLocation(
             storage_type=StorageLocationType.EXTERNAL_S3, bucket=bucket, sts_enabled=sts or None
         )
         .store(synapse_client=syn)
         .storage_location_id
     )
+
+
+def ensure_only_location(syn, container, bucket: str, sts: bool = False) -> int:
+    """
+    Make an external S3 location on the bucket the container's only upload destination;
+    returns its ID.
+    """
+    location_id = ensure_location(syn, bucket, sts)
     setting = container.get_project_setting(setting_type="upload", synapse_client=syn)
     if list((setting.locations if setting else None) or []) != [location_id]:
         # A destructive update: the given list replaces the container's locations
