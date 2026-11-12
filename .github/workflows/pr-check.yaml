@@ -5,9 +5,7 @@ on:
     branches: ['*']
 
 jobs:
-  # One test run, for the environment the PR deploys to: the dev account for a PR into dev,
-  # the prod account for the dev -> prod promotion PR
   test:
     uses: ./.github/workflows/test.yaml
     with:
-      environment: ${{ github.base_ref == 'prod' && 'prod' || 'dev' }}
+      environment: dev

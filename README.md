@@ -53,8 +53,8 @@ feature branch ──PR──▶ dev ──PR──▶ prod
 
 - Branch from `dev`, open a PR into `dev`: `pr-check.yaml` runs tests, pre-commit and a synth
   of the dev environment. Merging deploys the dev account.
-- Promote with a `dev` → `prod` PR: `pr-check.yaml` runs the same checks against the prod
-  environment, and merging deploys the prod account.
+- Promote with a `dev` → `prod` PR; merging deploys the prod account (`deploy-prod.yaml`
+  runs the tests and a prod synth before deploying).
 - Each account's OIDC deploy role comes from organizations-infra and trusts only that account's
   branch (`dev` or `prod`). Each account must be CDK-bootstrapped.
 - Until the first stack, a deploy only checks that the OIDC role is assumed
@@ -79,6 +79,5 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 1. A stage AWS account and its GitHub OIDC deploy role (Sage IT)
 2. `config/stage.yaml`
 3. `"stage"` in `VALID_ENVS` (`src/utils.py`)
-4. `.github/workflows/deploy-stage.yaml` (a copy of `deploy-dev.yaml`), a `stage` branch, and
-   `stage` as the environment for PRs into `prod` in `pr-check.yaml`
+4. `.github/workflows/deploy-stage.yaml` (a copy of `deploy-dev.yaml`) and a `stage` branch
 5. Promote `dev` → `stage` → `prod`
