@@ -1,2 +1,0 @@
-# RAPID's prod account, deployed by CI on every push to the prod branch (deploy-prod.yaml).
-# Overrides config/base.yaml per top-level key.

@@ -2,6 +2,7 @@ import os
 
 import aws_cdk as cdk
 
+from src.synapse_bucket_stack import SynapseBucketStack
 from src.utils import load_context_config
 
 cdk_app = cdk.App()
@@ -19,6 +20,17 @@ env = cdk.Environment(
 for key, value in (config.get("TAGS") or {}).items():
     cdk.Tags.of(cdk_app).add(key, value)
 
-# No stacks yet: this only proves the CI deploy path (OIDC role, CDK bootstrap)
+buckets = config.get("BUCKETS") or []
+
+# One stack per data provider bucket, so each can be added or retired on its own
+for bucket in buckets:
+    SynapseBucketStack(
+        scope=cdk_app,
+        construct_id=f"{STACK_NAME_PREFIX}-bucket-{bucket['id']}",
+        bucket_config=bucket,
+        synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
+        synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
+        env=env,
+    )
 
 cdk_app.synth()

@@ -1,2 +1,21 @@
-# RAPID's dev account, deployed by CI on every push to the dev branch (deploy-dev.yaml).
-# Overrides config/base.yaml per top-level key.
+BUCKETS:
+  # id: short name, used in the stack name (rapid-dev-bucket-example). Lowercase, digits, dashes
+  - id: example
+    # Globally unique S3 bucket name
+    bucket_name: rapid-dev-provider-a  # TODO
+    # The provider's Synapse project, created by the deploy (tools/setup_synapse_projects.py)
+    # with the bucket as its only upload destination. Project names are global
+    synapse_project_name: RAPID dev provider 1  # TODO
+    # Optional, default "sts". The empty folder in the project that gives contributors
+    # read-write STS credentials for the bucket (files are indexed at the project root)
+    sts_folder: sts
+    # Synapse user or team IDs written to owner.txt (the service account is added for you)
+    synapse_owner_ids: [3627882] # "RAPID Test" team
+    # Optional. IAM principals (ARNs) with read/write on the objects
+    s3_user_arns: []
+    # Optional. IAM principals (ARNs) with full access to the bucket
+    s3_admin_arns: []
+    # Optional. IAM principals (ARNs) denied every s3:*Delete* on the objects
+    deny_delete_arns: []
+    # Optional, default false
+    versioned: false

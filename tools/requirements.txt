@@ -1,0 +1,2 @@
+# tools/setup_synapse_projects.py (run by aws-deploy.yaml after the deploy)
+synapseclient==4.15.0
