@@ -42,7 +42,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 | Stack | Purpose |
 |---|---|
 | `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
-| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
+| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket, alarms and the S3 data-events trail. Shared by all buckets |
 
 Adding a provider is a config change: add a `BUCKETS` entry to `config/{env}.yaml`.
 
@@ -88,8 +88,76 @@ Some exist for Vanta's AWS tests, which read an alarm's top-level `MetricName` a
 - The sidecar rule's DLQ: one alarm when a message lands, another if it is still there an hour
   later. A new queue needs an `ApproximateAgeOfOldestMessage` alarm too (`dlq_age_alarm`, at
   most 5000 s). Vanta: "Messaging queue message age monitored"
+- A `kms_encryption` bucket emails any change to its key (see SSE-KMS)
 - `DATA_STORE_TAGS` (`VantaContainsUserData`, `VantaUserDataStored`) classify the provider
   buckets. S3 tag values allow only letters, digits, spaces and `+ - = . _ : / @`
+
+### SSE-KMS (opt-in)
+
+Provider buckets use SSE-S3 by default, which Vanta's "User data in S3 is encrypted at rest
+(AWS)" accepts. `kms_encryption: true` on a `BUCKETS` entry switches that bucket to SSE-KMS:
+
+- Its own customer-managed key, `alias/rapid-{env}-bucket-{id}`, rotated yearly and retained
+  with the bucket (deleting the key would make every object unreadable). An S3 Bucket Key
+  keeps KMS calls to about one per bucket rather than one per object
+- The key policy lets the bucket's read/write principals (Synapse's AWS account,
+  `s3_user_arns`, `s3_admin_arns`) and the pipeline's Prepare and Sync roles use the key,
+  only through S3 (`kms:ViaService`) and only for this bucket's objects (the
+  `kms:EncryptionContext:aws:s3:arn` S3 sends), so nobody granted here can use it for another
+  bucket. The bucket stack imports those role ARNs from the pipeline stack (the same direction
+  as the alarm topic). Our account's IAM principals can also use it through the default
+  root statement: admins are few (JumpCloud) and everything deploys from this repo
+- Changes to the key email `ALARM_EMAIL`: `PutKeyPolicy`, `DisableKey`, `DisableKeyRotation`,
+  `ScheduleKeyDeletion`, `CancelKeyDeletion`, `CreateGrant`, `UpdateAlias`, `DeleteAlias`
+  (CloudTrail events from the org trail, via EventBridge). A deploy that changes the key
+  policy sends one too; any other is a change made by hand
+- The bucket policy denies a `PutObject` (and so a multipart upload or copy) that asks for
+  SSE-S3, another KMS key or SSE-C. A write with no encryption headers gets the bucket
+  default, so uploaders need no changes; they should not pass `--sse`. `--sse aws:kms` alone
+  is denied too, since S3 then picks the AWS-managed `aws/s3` key; `--sse-kms-key-id` must be
+  the full `KmsKeyArn` output
+- `owner.txt` is the exception, written as SSE-S3: Synapse reads it with its own credentials
+  to create a storage location, and it holds only Synapse IDs
+
+**Synapse STS credentials can neither write nor read a KMS bucket.** Tested in the sandbox
+(`rapid-sandbox-bucket-kmstest`), STS uploads fail with `not authorized to perform:
+kms:GenerateDataKey ... because no identity-based policy allows the kms:GenerateDataKey
+action`, and STS reads the same way on `kms:Decrypt`. Synapse's temporary-credentials role has
+no KMS permissions, and its STS session policy allows only S3 actions
+([`StsManagerImpl`](https://github.com/Sage-Bionetworks/Synapse-Repository-Services/blob/develop/services/repository-managers/src/main/java/org/sagebionetworks/repo/manager/sts/StsManagerImpl.java)),
+so no grant on our side helps: Synapse would have to add `kms:GenerateDataKey` and
+`kms:Decrypt` to both. What does work on a KMS bucket:
+
+- Writes with credentials from our account (or `s3_user_arns` principals with the key grant)
+- The pipeline: Prepare and Sync decrypt the sidecar and files, and index them
+- Downloads through Synapse (web, `synapseclient`): Synapse signs them with a role that has
+  `kms:Decrypt`, which our key policy allows
+
+To try it without touching a bucket people already use, add a second `BUCKETS` entry with its
+own bucket name, Synapse project and `kms_encryption: true`. Switching an existing bucket either
+way is safe but only affects new objects: existing ones keep the encryption they were written
+with.
+
+
+### S3 data events (audit trail)
+
+The org trail (`sagebase-orgtrail`) records management events only. With `S3_DATA_EVENTS`
+(on in `base.yaml`), the pipeline stack adds a trail `rapid-{env}-pipeline-s3-data-events`
+that records every object-level call on the provider buckets: `GetObject`, `PutObject`,
+`DeleteObject`, copies and multipart uploads, with the caller, source IP and time.
+
+- No management events (the org trail has them, and a second copy is billed). Single
+  region, like the buckets
+- Calls with Synapse STS credentials name the Synapse user and entity in the session:
+  `assumed-role/...SynapseTempCredent.../sts-<user id>-<entity id>`. Downloads through Synapse
+  show Synapse's own role; Synapse's download records name the user
+- Logs are SSE-KMS under their own rotated key (only this trail may encrypt with it), with
+  log file validation (digest files), in a retained bucket that denies every delete; a
+  lifecycle rule expires them after `retention_days` (365)
+- A new `BUCKETS` entry is added to the trail automatically
+- About $0.10 per 100,000 events: logging a 10,000-file contribution costs about a cent
+
+Off in the sandbox, where the DNT dev account already logs every S3 data event.
 
 ## Configuration
 
@@ -114,6 +182,7 @@ BUCKETS:
     s3_admin_arns: []
     deny_delete_arns: []
     versioned: false
+    kms_encryption: false            # optional: SSE-KMS with the bucket's own key (see SSE-KMS)
 ```
 
 ## Contributing data (providers)

@@ -101,6 +101,14 @@ def validate_config(config: Dict[str, Any]) -> None:
     if account is not None and not re.fullmatch(r"\d{12}", str(account)):
         raise ValueError(f"AWS_ACCOUNT must be a 12-digit AWS account ID, got '{account}'")
 
+    data_events = config.get("S3_DATA_EVENTS") or {}
+    if data_events.get("enabled"):
+        days = data_events.get("retention_days")
+        if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+            raise ValueError(
+                f"S3_DATA_EVENTS.retention_days must be a positive number of days, got '{days}'"
+            )
+
     sidecar = config["SYNC"].get("sidecar_filename", "")
     if not sidecar or "/" in sidecar:
         raise ValueError(f"SYNC.sidecar_filename must be a file name, got '{sidecar}'")
@@ -163,6 +171,8 @@ def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
     for field in _BUCKET_LIST_FIELDS:
         if not isinstance(bucket.get(field, []), list):
             raise ValueError(f"{where}.{field} must be a list")
+    if not isinstance(bucket.get("kms_encryption", False), bool):
+        raise ValueError(f"{where}.kms_encryption must be true or false")
     for owner in bucket.get("synapse_owner_ids", []):
         if not _SYNAPSE_PRINCIPAL.match(str(owner)):
             raise ValueError(f"{where}.synapse_owner_ids: '{owner}' is not a numeric Synapse ID")

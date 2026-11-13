@@ -27,3 +27,6 @@ BUCKETS:
     deny_delete_arns: []
     # Optional, default false
     versioned: false
+    # Optional, default false. SSE-KMS under the bucket's own customer-managed key instead of
+    # SSE-S3. Synapse STS credentials cannot write to such a bucket yet (README: "SSE-KMS")
+    kms_encryption: false
