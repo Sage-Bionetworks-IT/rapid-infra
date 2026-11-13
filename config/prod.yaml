@@ -1,3 +1,5 @@
+ALARM_EMAIL: ""  # TODO: e.g. aws-rapid-prod@sagebase.org
+
 BUCKETS:
   # TODO: replace with the first real provider before the first dev → prod merge, which creates
   # this bucket. Fields are documented in config/dev.yaml.

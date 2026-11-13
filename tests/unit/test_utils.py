@@ -13,6 +13,7 @@ VALID = {
         "service_account_id": "1234567",
         "project_folders": ["raw", "processed/level_1"],
     },
+    "SYNC": {"sidecar_filename": "sidecar.json"},
     "BUCKETS": [
         {"id": "a", "bucket_name": "rapid-test-a", "synapse_project_name": "RAPID A"},
         {"id": "b", "bucket_name": "rapid-test-b", "synapse_project_name": "RAPID B"},
@@ -93,13 +94,13 @@ class TestLoadContextConfig:
     def test_base_config_deep_merging(self, tmp_path):
         _write(
             tmp_path / "base.yaml",
-            {**VALID, "SHARED": "from_base", "SYNC": {"max_concurrency": 10, "retention": 90}},
+            {**VALID, "SHARED": "from_base", "NESTED": {"concurrency": 10, "retention": 90}},
         )
-        _write(tmp_path / "dev.yaml", {"SHARED": "from_env", "SYNC": {"max_concurrency": 5}})
+        _write(tmp_path / "dev.yaml", {"SHARED": "from_env", "NESTED": {"concurrency": 5}})
         assert load_context_config("dev", str(tmp_path)) == {
             **VALID,
             "SHARED": "from_env",
-            "SYNC": {"max_concurrency": 5, "retention": 90},
+            "NESTED": {"concurrency": 5, "retention": 90},
         }
 
     def test_no_base_config(self, tmp_path):
@@ -156,6 +157,7 @@ def test_missing_project_name_rejected():
         ({"BUCKETS__0__synapse_owner_ids": ["jdoe"]}, "not a numeric Synapse ID"),
         ({"BUCKETS__0__s3_user_arns": "arn:aws:iam::1:root"}, "must be a list"),
         ({"SYNAPSE__service_account_id": "TODO"}, "service_account_id"),
+        ({"SYNC__sidecar_filename": "a/sidecar.json"}, "sidecar_filename"),
         ({"AWS_ACCOUNT": "dnt-dev"}, "12-digit"),
     ],
 )

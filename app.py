@@ -3,6 +3,7 @@ import os
 import aws_cdk as cdk
 
 from src.synapse_bucket_stack import SynapseBucketStack
+from src.sync_pipeline_stack import SyncPipelineStack
 from src.utils import load_context_config
 
 cdk_app = cdk.App()
@@ -30,6 +31,18 @@ for bucket in buckets:
         bucket_config=bucket,
         synapse_account_id=config["SYNAPSE"]["aws_account_id"],
         synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
+        env=env,
+    )
+
+# One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
+# reference, so bucket stacks come and go without export/import ordering.
+if buckets:
+    SyncPipelineStack(
+        scope=cdk_app,
+        construct_id=f"{STACK_NAME_PREFIX}-pipeline",
+        buckets=buckets,
+        sync_config=config["SYNC"],
+        alarm_email=config.get("ALARM_EMAIL") or "",
         env=env,
     )
 

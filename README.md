@@ -8,8 +8,19 @@ its own S3 bucket, connected to its own Synapse project. Providers upload a fold
 then a `sidecar.json` in it; the sidecar's arrival indexes every file in the folder into the
 provider's Synapse project, as Synapse files that point at the S3 objects (no data is copied).
 
-So far, only the provider buckets and the indexing code (`src/lambda_sync/indexer.py`); the
-sync pipeline that runs it comes next.
+```
+provider uploads s3://<provider-bucket>/<folder>/...files...
+then writes      s3://<provider-bucket>/<folder>/sidecar.json   ← written LAST
+  → S3 "Object Created" → EventBridge rule (*/sidecar.json, configured buckets only)
+    → Step Functions  rapid-{env}-pipeline
+        Prepare         validate the sidecar, take the bucket's Synapse project (from config)
+        ResolveStorage  look up the project and its storage location on the bucket (set up
+                        after each deploy by tools/setup_synapse_projects.py, never here)
+        SyncFiles       Distributed Map over every object under <folder>/
+                          → sync Lambda per object: Synapse folders for the key's path,
+                            then an external S3 file handle + File entity
+    → per-file results in the results bucket; a failed execution emails ALARM_EMAIL
+```
 
 The skeleton follows Sage IT's
 [aws-cdk-ecs-infra-template](https://github.com/Sage-Bionetworks-IT/aws-cdk-ecs-infra-template)
@@ -24,6 +35,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 | Stack | Purpose |
 |---|---|
 | `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
+| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
 
 Adding a provider is a config change: add a `BUCKETS` entry to `config/{env}.yaml`.
 
@@ -78,14 +90,30 @@ BUCKETS:
     versioned: false
 ```
 
+## The sidecar
+
+The sidecar is the completion sentinel, like `manifest.ttl` in sagebrain-infra: write it after
+every file in the folder is uploaded.
+
+- Its key must be `<folder>/sidecar.json` (`SYNC.sidecar_filename`). A root-level sidecar is
+  ignored.
+- Its content must be a JSON object. No fields are required yet; the Synapse project is taken
+  from config, never from the sidecar, so a provider cannot index into another project.
+- Everything under `<folder>/` is synced, including subfolders. Sidecars and folder markers are
+  skipped.
+- Re-uploading the sidecar re-runs the folder. Files with an unchanged MD5 are left alone; a
+  changed file becomes a new version of its Synapse entity.
+- Deleting from S3 does **not** delete from Synapse.
+
 ## Indexing code
 
 `src/lambda_sync/indexer.py` is ported from
 [s3-synapse-sync](https://github.com/Sage-Bionetworks/s3-synapse-sync) (Apache-2.0; attribution
 in the module docstring). Only the indexing core is taken: not its S3-notification handler,
 Minerva/Batch processing or HTAN-specific configuration. It uses synapseclient's object models
-(`synapseclient.models`), not the client methods deprecated in 4.x. The module docstring lists
-what changed.
+(`synapseclient.models`), not the client methods deprecated in 4.x; the Synapse Lambdas run with
+`PYTHONWARNINGS=default::DeprecationWarning`, so any new deprecation shows up in their logs. The
+module docstring lists what changed.
 
 ## Development
 
@@ -100,7 +128,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 pre-commit install
 
 python -m pytest tests/ -v               # unit tests, no Docker or AWS needed
-cdk synth --context env=dev
+cdk synth --context env=dev              # needs Docker: bundles the sync Lambda for arm64
 pre-commit run --all-files
 ```
 
@@ -135,6 +163,8 @@ its `AWS_ACCOUNT` pins it so credentials for any other account fail the deploy:
 
 ```console
 cdk deploy --context env=sandbox --all --profile dnt-dev-admin
+aws --profile dnt-dev-admin secretsmanager put-secret-value \
+  --secret-id rapid-sandbox-pipeline/synapse-pat --secret-string '<PAT>'
 ```
 
 ### Adding a staging environment
@@ -152,11 +182,34 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 
 1. **Synapse service account.** Set its user ID in `SYNAPSE.service_account_id`. It is written
    to every bucket's `owner.txt`, so it can create the bucket's Synapse storage location.
-2. **Its PAT** (view, download and modify scopes) as the `SYNAPSE_AUTH_TOKEN` repository
-   secret, which `deploy-dev.yaml` and `deploy-prod.yaml` pass to the `synapse-setup` job.
+2. **Its PAT** (view, download and modify scopes), in two places: the `SYNAPSE_AUTH_TOKEN`
+   repository secret, which `deploy-dev.yaml` and `deploy-prod.yaml` pass to the
+   `synapse-setup` job, and, after the first deploy, the pipeline's secret for the sync Lambdas:
+   ```console
+   aws --profile <profile> secretsmanager put-secret-value \
+     --secret-id rapid-dev-pipeline/synapse-pat --secret-string '<PAT>'
+   ```
+3. **Alarm email.** Set `ALARM_EMAIL` and confirm the SNS subscription email.
 
 ### Per provider bucket
 
 1. Add the `BUCKETS` entry, with a `synapse_project_name` not used anywhere in Synapse, and
    merge; CI deploys the bucket stack, then sets up its Synapse project.
 2. Share the project with the provider only (until `apply_project_template()` does it).
+
+The pipeline never creates a project or storage location: each execution's `ResolveStorage`
+step looks up the bucket's project by name and its storage location on the bucket. If either
+is missing (the setup job failed, or has not run yet), the execution fails without retrying
+and emails `ALARM_EMAIL`; rerun the setup job, then re-upload the sidecar.
+
+### Watching a sync
+
+```console
+aws --profile <profile> stepfunctions list-executions --state-machine-arn \
+  $(aws --profile <profile> cloudformation describe-stacks --stack-name rapid-dev-pipeline \
+    --query "Stacks[0].Outputs[?OutputKey=='SyncStateMachineArn'].OutputValue" --output text)
+```
+
+Per-file results (`created` / `updated` / `unchanged` / `skipped`, or the error) are under
+`runs/` in the `ResultsBucketName` output bucket. Lambda logs carry one
+`{"event": "file_sync", ...}` line per file.

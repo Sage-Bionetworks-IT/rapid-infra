@@ -2,7 +2,7 @@
 # Deployed from a laptop, never by CI:
 #   cdk deploy --context env=sandbox --all --profile dnt-dev-admin
 #   SYNAPSE_AUTH_TOKEN=... python tools/setup_synapse_projects.py --env sandbox
-# Stacks: rapid-sandbox-bucket-test
+# Stacks: rapid-sandbox-bucket-test, rapid-sandbox-pipeline
 
 # Deploys with credentials for any other account fail
 AWS_ACCOUNT: "631692904429"
@@ -14,6 +14,14 @@ SYNAPSE:
   service_account_id: "3324230"  # the user whose PAT you use
   # Exercises the folder setup
   project_folders: [raw, processed/level_1]
+
+SYNC:
+  sidecar_filename: sidecar.json
+  max_concurrency: 5
+  tolerated_failure_percentage: 0
+  results_retention_days: 7
+
+ALARM_EMAIL: ""
 
 BUCKETS:
   # id: short name, used in the stack name (rapid-dev-bucket-example). Lowercase, digits, dashes

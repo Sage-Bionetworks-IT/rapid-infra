@@ -91,30 +91,19 @@ def _read_file(path: Path) -> Dict[str, Any]:
 
 def validate_config(config: Dict[str, Any]) -> None:
     """Fail synth early, with the offending key, instead of at deploy time."""
-    for key in ("PROJECT_NAME", "SYNAPSE"):
+    for key in ("PROJECT_NAME", "SYNAPSE", "SYNC"):
         if key not in config:
             raise ValueError(f"Missing config key {key}")
 
-    service_account = str(config["SYNAPSE"].get("service_account_id", ""))
-    if not _SYNAPSE_PRINCIPAL.match(service_account):
-        raise ValueError(
-            f"SYNAPSE.service_account_id must be a numeric Synapse user ID, got '{service_account}'"
-        )
-
-    folders = config["SYNAPSE"].get("project_folders") or []
-    if not isinstance(folders, list):
-        raise ValueError("SYNAPSE.project_folders must be a list")
-    for path in folders:
-        parts = str(path).split("/")
-        if not all(_SYNAPSE_NAME.match(p) for p in parts):
-            raise ValueError(
-                f"SYNAPSE.project_folders: '{path}' must be folder names joined by '/', "
-                f"each matching {_SYNAPSE_NAME.pattern}"
-            )
+    folders = _validate_synapse(config["SYNAPSE"])
 
     account = config.get("AWS_ACCOUNT")
     if account is not None and not re.fullmatch(r"\d{12}", str(account)):
         raise ValueError(f"AWS_ACCOUNT must be a 12-digit AWS account ID, got '{account}'")
+
+    sidecar = config["SYNC"].get("sidecar_filename", "")
+    if not sidecar or "/" in sidecar:
+        raise ValueError(f"SYNC.sidecar_filename must be a file name, got '{sidecar}'")
 
     seen = {"id": set(), "bucket_name": set(), "synapse_project_name": set()}
     for i, bucket in enumerate(config.get("BUCKETS") or []):
@@ -130,6 +119,27 @@ def validate_config(config: Dict[str, Any]) -> None:
                 # provider, so a project is as unique as the bucket itself
                 raise ValueError(f"{where}.{field} '{bucket[field]}' is used by another bucket")
             values.add(bucket[field])
+
+
+def _validate_synapse(synapse: Dict[str, Any]) -> list:
+    """Validate the SYNAPSE section; returns its project_folders."""
+    service_account = str(synapse.get("service_account_id", ""))
+    if not _SYNAPSE_PRINCIPAL.match(service_account):
+        raise ValueError(
+            f"SYNAPSE.service_account_id must be a numeric Synapse user ID, got '{service_account}'"
+        )
+
+    folders = synapse.get("project_folders") or []
+    if not isinstance(folders, list):
+        raise ValueError("SYNAPSE.project_folders must be a list")
+    for path in folders:
+        parts = str(path).split("/")
+        if not all(_SYNAPSE_NAME.match(p) for p in parts):
+            raise ValueError(
+                f"SYNAPSE.project_folders: '{path}' must be folder names joined by '/', "
+                f"each matching {_SYNAPSE_NAME.pattern}"
+            )
+    return folders
 
 
 def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
