@@ -8,7 +8,7 @@ def env(monkeypatch):
     monkeypatch.setenv("SIDECAR_FILENAME", "sidecar.json")
     monkeypatch.setenv("SYNAPSE_PAT_SECRET_ARN", "arn:secret")
     sync._reset()
-    calls = {"login": 0, "resolve": [], "index": []}
+    calls = {"login": 0, "resolve": [], "resolve_encrypted": [], "index": []}
     syn = object()
 
     def fake_synapse():
@@ -24,6 +24,11 @@ def env(monkeypatch):
             raise RuntimeError("Synapse 503")
         return "syn1", 42
 
+    def fake_resolve_encrypted(s, bucket):
+        assert s is syn
+        calls["resolve_encrypted"].append(bucket)
+        return 43
+
     def fake_index(s, s3, **kwargs):
         assert s is syn
         calls["index"].append(kwargs)
@@ -33,6 +38,7 @@ def env(monkeypatch):
 
     monkeypatch.setattr(sync, "_synapse", fake_synapse)
     monkeypatch.setattr(sync, "resolve_synapse_storage", fake_resolve)
+    monkeypatch.setattr(sync, "resolve_encrypted_location", fake_resolve_encrypted)
     monkeypatch.setattr(sync, "index_object", fake_index)
     yield calls
     sync._reset()
@@ -49,7 +55,11 @@ def test_resolve_storage(env):
         "sidecar_key": "b/sidecar.json",
         "project_name": "RAPID A",
     }
-    assert sync.resolve_storage(prepared, None) == {"project_id": "syn1", "storage_location_id": 42}
+    assert sync.resolve_storage(prepared, None) == {
+        "project_id": "syn1",
+        "storage_location_id": 42,
+        "encrypted_storage_location_id": None,
+    }
     assert env["resolve"] == [("RAPID A", "provider-a")]
 
 
@@ -72,9 +82,37 @@ def test_indexes_a_file_with_the_given_location(env):
             "key": "b/data.csv",
             "project_id": "syn1",
             "storage_location_id": 42,
+            "content_md5": None,
         }
     ]
     assert env["resolve"] == []  # resolved once per execution, not per file
+
+
+def test_indexes_an_encrypted_file_and_passes_staged_on(env):
+    staged = {"bucket": "provider-a", "key": "b/data.vcf", "etag": '"e"'}
+    item = {
+        **_item("b/data.vcf.encrypted"),
+        "bucket": "provider-a-enc",
+        "content_md5": "ab" * 16,
+        "staged": staged,
+    }
+    assert sync.handler(item, None) == {
+        "key": "b/data.vcf.encrypted",
+        "status": "created",
+        "entity_id": "syn9",
+        "staged": staged,
+    }
+    assert env["index"][0]["bucket"] == "provider-a-enc"
+    assert env["index"][0]["content_md5"] == "ab" * 16
+
+
+def test_resolve_storage_looks_up_the_encrypted_bucket_location(env):
+    cse = {"bucket": "provider-a-enc", "patterns": ["*"], "key_arn": "k", "provider": "a"}
+    result = sync.resolve_storage(
+        {"bucket": "provider-a", "project_name": "RAPID A", "cse": cse}, None
+    )
+    assert result["encrypted_storage_location_id"] == 43
+    assert env["resolve_encrypted"] == ["provider-a-enc"]
 
 
 @pytest.mark.parametrize(

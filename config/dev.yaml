@@ -31,3 +31,11 @@ BUCKETS:
     # Optional, default false. SSE-KMS under the bucket's own customer-managed key instead of
     # SSE-S3. Synapse STS credentials cannot write to such a bucket yet (README: "SSE-KMS")
     kms_encryption: false
+    # Optional. Client-side encryption of the files matching `patterns` (README: "Client-side
+    # encryption"): the pipeline encrypts them into encrypted_bucket_name (globally unique),
+    # indexes the ciphertext and deletes the plaintext from this bucket, which must not be
+    # versioned. decrypt_arns: IAM principals allowed to decrypt
+    # client_side_encryption:
+    #   encrypted_bucket_name: rapid-dev-example-encrypted
+    #   patterns: ["**/*.vcf", "clinical/**"]
+    #   decrypt_arns: []

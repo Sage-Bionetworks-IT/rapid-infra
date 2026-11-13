@@ -153,6 +153,20 @@ def test_prints_the_contribute_command_for_the_provider(syn, capsys):
     assert "s3://rapid-test-a/<s3-folder>/" in out
 
 
+def test_client_side_encryption_location_is_on_no_project_or_folder(syn):
+    cse = {"encrypted_bucket_name": "rapid-test-a-enc", "patterns": ["*"]}
+    result = setup.setup_project(syn, {**BUCKET, "client_side_encryption": cse}, [])
+
+    encrypted = syn.locations[("rapid-test-a-enc", False)]
+    assert result["encrypted_storage_location_id"] == encrypted
+    # Only file handles use it: nothing can be uploaded there through Synapse
+    assert all(encrypted not in locations for locations in syn.settings.values())
+
+
+def test_no_encrypted_location_without_client_side_encryption(syn):
+    assert setup.setup_project(syn, BUCKET, [])["encrypted_storage_location_id"] is None
+
+
 def test_rerun_changes_nothing(syn):
     first = setup.setup_project(syn, BUCKET, FOLDERS)
     entities, settings = dict(syn.entities), dict(syn.settings)

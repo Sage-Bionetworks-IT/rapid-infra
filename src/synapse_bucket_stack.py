@@ -9,6 +9,7 @@ from aws_cdk import custom_resources as cr
 from constructs import Construct
 
 from src.alarms import lambda_error_alarms
+from src.utils import cse_key_alias
 
 OWNER_FILE = "owner.txt"
 
@@ -59,6 +60,11 @@ class SynapseBucketStack(cdk.Stack):
       that read objects) use it, only through S3 and only for this bucket's objects. Changes
       to the key email `alarm_topic`. Synapse's STS credentials have no KMS permissions, so
       STS contributors cannot write to such a bucket (README)
+    - With `client_side_encryption`, this bucket is the staging bucket for the files its
+      `patterns` match: the pipeline encrypts them (AWS Encryption SDK, under a KMS key of its
+      own) into a second, encrypted bucket, indexes the ciphertext in Synapse and deletes the
+      plaintext. Only the pipeline's Encrypt role writes the encrypted bucket; Synapse reads
+      it; `decrypt_arns` may decrypt (README: "Client-side encryption")
     - An Errors alarm on the stack's Lambda (the owner.txt custom resource), emailing
       `alarm_topic`: the pipeline's, imported from it. The pipeline imports nothing from here,
       so bucket stacks still come and go freely
@@ -79,6 +85,8 @@ class SynapseBucketStack(cdk.Stack):
         kms_key_users: list[iam.IPrincipal] | None = None,
         alarm_topic: sns.ITopic | None = None,
         lambda_errors_per_5_minutes: int = 1,
+        # The pipeline's Encrypt role, for a client_side_encryption bucket
+        cse_encryptor: iam.IRole | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -187,7 +195,12 @@ class SynapseBucketStack(cdk.Stack):
         if self.key:
             self._enforce_kms(rw_principals + admin_principals, kms_key_users or [])
             if alarm_topic is not None:
-                self._alarm_on_key_changes(bucket_config["bucket_name"], alarm_topic)
+                self._alarm_on_key_changes(
+                    "KeyChangeRule",
+                    self.key,
+                    f"the KMS key of s3://{bucket_config['bucket_name']}",
+                    alarm_topic,
+                )
 
         # owner.txt proves bucket ownership to Synapse when a storage location is created. The
         # creator must be listed, and only the storage location's creator may create file
@@ -195,36 +208,22 @@ class SynapseBucketStack(cdk.Stack):
         owners = [str(o) for o in bucket_config.get("synapse_owner_ids", [])]
         if str(synapse_service_account_id) not in owners:
             owners.append(str(synapse_service_account_id))
-        owner_file_params = {
-            "Bucket": self.bucket.bucket_name,
-            "Key": OWNER_FILE,
-            "Body": ",".join(owners),
-            "ContentType": "text/plain",
-        }
-        if self.key:
-            # Synapse reads owner.txt with its own credentials to create a storage location.
-            # It holds only Synapse IDs, so it stays SSE-S3 (exempt from the KMS-only policy)
-            # rather than depending on Synapse's KMS permissions
-            owner_file_params["ServerSideEncryption"] = "AES256"
-        put_owner_file = cr.AwsSdkCall(
-            service="S3",
-            action="putObject",
-            parameters=owner_file_params,
-            # A new owner list replaces the resource, so the file is rewritten
-            physical_resource_id=cr.PhysicalResourceId.of(f"owner.txt:{','.join(owners)}"),
-        )
-        owner_file = cr.AwsCustomResource(
-            self,
-            "SynapseOwnerFile",
-            on_create=put_owner_file,
-            on_update=put_owner_file,
-            policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
-                resources=[self.bucket.arn_for_objects(OWNER_FILE)]
-            ),
-            install_latest_aws_sdk=False,
-        )
-        # The policy must exist first: with enforce_ssl the bucket policy is created anyway
-        owner_file.node.add_dependency(self.bucket.policy)
+        # Synapse reads owner.txt with its own credentials to create a storage location. It
+        # holds only Synapse IDs, so on a KMS bucket it stays SSE-S3 (exempt from the KMS-only
+        # policy) rather than depending on Synapse's KMS permissions
+        self._owner_file("SynapseOwnerFile", self.bucket, owners, sse_s3=bool(self.key))
+
+        self.encrypted_bucket = None
+        self.cse_key = None
+        if bucket_config.get("client_side_encryption"):
+            self._client_side_encryption(
+                bucket_config,
+                synapse_account_id,
+                cse_encryptor,
+                owners,
+                data_store_tags or {},
+                alarm_topic,
+            )
 
         # Last, so every Lambda in the stack is covered (Vanta)
         lambda_error_alarms(self, lambda_errors_per_5_minutes, alarm_topic)
@@ -233,6 +232,191 @@ class SynapseBucketStack(cdk.Stack):
         cdk.CfnOutput(self, "BucketArn", value=self.bucket.bucket_arn)
         if self.key:
             cdk.CfnOutput(self, "KmsKeyArn", value=self.key.key_arn)
+
+    def _owner_file(self, construct_id: str, bucket: s3.Bucket, owners: list[str], sse_s3: bool):
+        params = {
+            "Bucket": bucket.bucket_name,
+            "Key": OWNER_FILE,
+            "Body": ",".join(owners),
+            "ContentType": "text/plain",
+        }
+        if sse_s3:
+            params["ServerSideEncryption"] = "AES256"
+        put_owner_file = cr.AwsSdkCall(
+            service="S3",
+            action="putObject",
+            parameters=params,
+            # A new owner list replaces the resource, so the file is rewritten
+            physical_resource_id=cr.PhysicalResourceId.of(f"owner.txt:{','.join(owners)}"),
+        )
+        owner_file = cr.AwsCustomResource(
+            self,
+            construct_id,
+            on_create=put_owner_file,
+            on_update=put_owner_file,
+            policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
+                resources=[bucket.arn_for_objects(OWNER_FILE)]
+            ),
+            install_latest_aws_sdk=False,
+        )
+        # The policy must exist first: with enforce_ssl the bucket policy is created anyway
+        owner_file.node.add_dependency(bucket.policy)
+
+    def _client_side_encryption(
+        self,
+        bucket_config: dict,
+        synapse_account_id: str,
+        encryptor: iam.IRole | None,
+        owners: list[str],
+        data_store_tags: dict,
+        alarm_topic: sns.ITopic | None,
+    ) -> None:
+        """
+        The encrypted bucket and the KMS key its files are encrypted under (README:
+        "Client-side encryption"). The pipeline's Encrypt role is the only writer; Synapse
+        reads, to serve downloads of the (encrypted) files it indexes from here.
+        """
+        if encryptor is None:
+            raise ValueError("client_side_encryption needs the pipeline's cse_encryptor role")
+        admin_principals = [iam.ArnPrincipal(arn) for arn in bucket_config.get("s3_admin_arns", [])]
+        cse = bucket_config["client_side_encryption"]
+        provider = bucket_config["id"]
+        self.encrypted_bucket_name = cse["encrypted_bucket_name"]
+
+        # Retained like the bucket: deleting it would make every encrypted file unreadable
+        self.cse_key = kms.Key(
+            self,
+            "CseKey",
+            alias=cse_key_alias(self.encrypted_bucket_name),
+            description=f"Client-side encryption key of s3://{self.encrypted_bucket_name}",
+            enable_key_rotation=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+        )
+        # The Encryption SDK passes its encryption context to KMS: the key only serves this
+        # provider's files. Called directly, not through S3, so no kms:ViaService
+        this_provider = {"StringEquals": {"kms:EncryptionContext:rapid:provider": provider}}
+        self.cse_key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="EncryptFiles",
+                principals=[encryptor],
+                actions=["kms:GenerateDataKey"],
+                resources=["*"],
+                conditions=this_provider,
+            )
+        )
+        decryptors = [iam.ArnPrincipal(arn) for arn in cse.get("decrypt_arns", [])]
+        if decryptors:
+            self.cse_key.add_to_resource_policy(
+                iam.PolicyStatement(
+                    sid="DecryptFiles",
+                    principals=decryptors,
+                    actions=["kms:Decrypt"],
+                    resources=["*"],
+                    conditions=this_provider,
+                )
+            )
+
+        # SSE-S3: the objects are ciphertext already
+        self.encrypted_bucket = s3.Bucket(
+            self,
+            "EncryptedBucket",
+            bucket_name=self.encrypted_bucket_name,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            enforce_ssl=True,
+            # An overwritten encrypted file stays recoverable
+            versioned=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            lifecycle_rules=[
+                # An Encrypt Lambda that times out mid-upload leaves its parts behind
+                s3.LifecycleRule(abort_incomplete_multipart_upload_after=cdk.Duration.days(7))
+            ],
+        )
+        for key, value in data_store_tags.items():
+            cdk.Tags.of(self.encrypted_bucket).add(key, value)
+
+        bucket = self.encrypted_bucket
+        objects = bucket.arn_for_objects("*")
+        synapse = iam.AccountPrincipal(synapse_account_id)
+        bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="SynapseList",
+                principals=[synapse],
+                actions=["s3:ListBucket*", "s3:GetBucketLocation"],
+                resources=[bucket.bucket_arn],
+            )
+        )
+        # Downloads, and owner.txt when the storage location is created. Never writes: files
+        # reach this bucket only through the Encrypt step
+        bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="SynapseRead",
+                principals=[synapse],
+                actions=["s3:GetObject"],
+                resources=[objects],
+            )
+        )
+        if admin_principals:
+            bucket.add_to_resource_policy(
+                iam.PolicyStatement(
+                    sid="AdminAccess",
+                    principals=admin_principals,
+                    actions=["s3:*"],
+                    resources=[bucket.bucket_arn, objects],
+                )
+            )
+        bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyWriteExceptEncryptor",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject", "s3:*MultipartUpload*"],
+                # owner.txt is written by this stack's custom resource
+                not_resources=[bucket.arn_for_objects(OWNER_FILE)],
+                conditions={"ArnNotEquals": {"aws:PrincipalArn": encryptor.role_arn}},
+            )
+        )
+        # s3:DeleteObject* also covers DeleteObjectVersion
+        keep = {}
+        if admin_principals:
+            keep = {"ArnNotEquals": {"aws:PrincipalArn": [p.arn for p in admin_principals]}}
+        bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyDelete",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:DeleteObject*"],
+                resources=[objects],
+                conditions=keep or None,
+            )
+        )
+        # Synapse STS sessions never get a location here; deny them outright all the same
+        bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenySts",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:*"],
+                resources=[bucket.bucket_arn, objects],
+                conditions={
+                    "StringEquals": {"aws:PrincipalAccount": synapse_account_id},
+                    "StringLike": {"aws:userid": STS_SESSION_USERID},
+                },
+            )
+        )
+
+        self._owner_file("EncryptedOwnerFile", bucket, owners, sse_s3=False)
+        if alarm_topic is not None:
+            self._alarm_on_key_changes(
+                "CseKeyChangeRule",
+                self.cse_key,
+                f"the client-side encryption key of s3://{self.encrypted_bucket_name}",
+                alarm_topic,
+            )
+        cdk.CfnOutput(self, "EncryptedBucketName", value=bucket.bucket_name)
+        # Decrypting (strict mode) names the key by its ARN
+        cdk.CfnOutput(self, "CseKeyArn", value=self.cse_key.key_arn)
 
     def _deny_sts_reads(self, synapse_account_id: str) -> None:
         """
@@ -357,28 +541,30 @@ class SynapseBucketStack(cdk.Stack):
             )
         )
 
-    def _alarm_on_key_changes(self, bucket_name: str, alarm_topic: sns.ITopic) -> None:
+    def _alarm_on_key_changes(
+        self, construct_id: str, key: kms.IKey, label: str, alarm_topic: sns.ITopic
+    ) -> None:
         """Email every KEY_CHANGE_EVENTS call on the key (CloudTrail, via the org trail)."""
         detail = events.EventField.from_path
         events.Rule(
             self,
-            "KeyChangeRule",
-            description=f"Email changes to the KMS key of s3://{bucket_name}",
+            construct_id,
+            description=f"Email changes to {label}",
             event_pattern=events.EventPattern(
                 source=["aws.kms"],
                 detail_type=["AWS API Call via CloudTrail"],
                 detail={
                     "eventSource": ["kms.amazonaws.com"],
                     "eventName": KEY_CHANGE_EVENTS,
-                    "resources": {"ARN": [self.key.key_arn]},
+                    "resources": {"ARN": [key.key_arn]},
                 },
             ),
             targets=[
                 targets.SnsTopic(
                     alarm_topic,
                     message=events.RuleTargetInput.from_multiline_text(
-                        f"KMS {detail('$.detail.eventName')} on the key of s3://{bucket_name}\n"
-                        f"Key: {self.key.key_arn}\n"
+                        f"KMS {detail('$.detail.eventName')} on {label}\n"
+                        f"Key: {key.key_arn}\n"
                         f"By: {detail('$.detail.userIdentity.arn')}\n"
                         f"At: {detail('$.detail.eventTime')}\n"
                         f"Parameters: {detail('$.detail.requestParameters')}\n"

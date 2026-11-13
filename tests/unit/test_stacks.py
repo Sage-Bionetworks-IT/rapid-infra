@@ -311,8 +311,12 @@ def test_prepare_gets_bucket_project_map(pipeline_template):
             "Environment": {
                 "Variables": {
                     "SIDECAR_FILENAME": "sidecar.json",
-                    "BUCKET_PROJECTS": json.dumps(
-                        {"rapid-test-a": "RAPID A", "rapid-test-b": "RAPID B"}
+                    "BUCKET_TARGETS": json.dumps(
+                        {
+                            "rapid-test-a": {"project_name": "RAPID A", "cse": None},
+                            "rapid-test-b": {"project_name": "RAPID B", "cse": None},
+                        },
+                        sort_keys=True,
                     ),
                 }
             },
@@ -353,6 +357,15 @@ def test_state_machine_maps_over_the_sidecar_folder(pipeline_template):
     }
     assert sync_files["MaxConcurrency"] == 7
     assert "ResultWriter" in sync_files
+
+
+def test_no_encrypt_steps_without_client_side_encryption(pipeline_template):
+    # Without a client_side_encryption bucket, each file is just SyncFile
+    assert not pipeline_template.find_resources(
+        "AWS::Lambda::Function", {"Properties": {"Handler": "encrypt.handler"}}
+    )
+    (sm,) = pipeline_template.find_resources("AWS::StepFunctions::StateMachine").values()
+    assert "EncryptFile" not in json.dumps(sm["Properties"]["DefinitionString"])
 
 
 def test_state_machine_can_list_only_configured_buckets(pipeline_template):
@@ -447,13 +460,21 @@ def test_rule_dlq_age_alarm(pipeline_template):
     assert props["AlarmActions"][0]["Ref"].startswith("AlarmTopic")
 
 
+@pytest.mark.parametrize("cse", [False, True])
 @pytest.mark.parametrize("kms", [False, True])
 @pytest.mark.parametrize("env", ["dev", "prod", "sandbox"])
-def test_repo_configs_synthesize(app, env, kms):
-    # As app.py builds them; with kms, the bucket stacks import the pipeline's reader roles
+def test_repo_configs_synthesize(app, env, kms, cse):
+    # As app.py builds them; with kms, the bucket stacks import the pipeline's reader roles,
+    # with cse its Encrypt role too
     config = load_context_config(env)
     if not config["BUCKETS"]:
         return
+    if cse:
+        for bucket in config["BUCKETS"]:
+            bucket["client_side_encryption"] = {
+                "encrypted_bucket_name": f"{bucket['bucket_name']}-enc",
+                "patterns": ["**/*.vcf"],
+            }
     data_events = config.get("S3_DATA_EVENTS") or {}
     pipeline = SyncPipelineStack(
         app,
@@ -474,6 +495,7 @@ def test_repo_configs_synthesize(app, env, kms):
             data_store_tags=config.get("DATA_STORE_TAGS"),
             kms_key_users=pipeline.object_readers,
             alarm_topic=pipeline.alarm_topic,
+            cse_encryptor=pipeline.cse_encryptor,
         )
     app.synth()
 

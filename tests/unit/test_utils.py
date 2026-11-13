@@ -188,3 +188,45 @@ def test_data_events_on_for_rapid_off_for_sandbox(env, enabled):
     assert bool(data_events.get("enabled")) is enabled
     if enabled:
         assert data_events["retention_days"] == 365
+
+
+CSE = {"encrypted_bucket_name": "rapid-test-a-encrypted", "patterns": ["**/*.vcf"]}
+
+
+def test_client_side_encryption_passes():
+    validate_config(
+        _with(BUCKETS__0__client_side_encryption={**CSE, "decrypt_arns": ["arn:aws:iam::1:root"]})
+    )
+
+
+@pytest.mark.parametrize(
+    "cse, message",
+    [
+        ("yes", "must be a mapping"),
+        ({**CSE, "pattern": ["*"]}, "unknown keys: pattern"),
+        ({"patterns": ["*"]}, "encrypted_bucket_name"),
+        ({**CSE, "encrypted_bucket_name": "Bad_Name"}, "encrypted_bucket_name"),
+        ({**CSE, "patterns": []}, "patterns must be a non-empty list"),
+        ({**CSE, "patterns": "*.vcf"}, "patterns must be a non-empty list"),
+        ({**CSE, "patterns": ["*.vcf", " "]}, "patterns must be a non-empty list"),
+        ({**CSE, "decrypt_arns": "arn:aws:iam::1:root"}, "decrypt_arns must be a list"),
+        # The other bucket's (staging) name, or its own
+        ({**CSE, "encrypted_bucket_name": "rapid-test-b"}, "used by another bucket"),
+        ({**CSE, "encrypted_bucket_name": "rapid-test-a"}, "used by another bucket"),
+    ],
+)
+def test_invalid_client_side_encryption_rejected(cse, message):
+    with pytest.raises(ValueError, match=message):
+        validate_config(_with(BUCKETS__0__client_side_encryption=cse))
+
+
+def test_client_side_encryption_needs_unversioned_staging():
+    config = _with(BUCKETS__0__client_side_encryption=CSE, BUCKETS__0__versioned=True)
+    with pytest.raises(ValueError, match="versioned: false"):
+        validate_config(config)
+
+
+def test_encrypted_bucket_names_are_unique():
+    config = _with(BUCKETS__0__client_side_encryption=CSE, BUCKETS__1__client_side_encryption=CSE)
+    with pytest.raises(ValueError, match=r"BUCKETS\[1\].*used by another bucket"):
+        validate_config(config)

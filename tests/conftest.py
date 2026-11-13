@@ -8,7 +8,11 @@ import pytest
 
 # Lambda handlers import their siblings as top-level modules, as they do in the Lambda bundle
 ROOT = Path(__file__).parents[1]
-for _dir in (ROOT / "src" / "lambda_prepare", ROOT / "src" / "lambda_sync"):
+for _dir in (
+    ROOT / "src" / "lambda_prepare",
+    ROOT / "src" / "lambda_sync",
+    ROOT / "src" / "lambda_encrypt",
+):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 

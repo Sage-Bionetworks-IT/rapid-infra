@@ -55,6 +55,8 @@ for bucket in buckets:
         kms_key_users=pipeline_stack.object_readers,
         alarm_topic=pipeline_stack.alarm_topic,
         lambda_errors_per_5_minutes=lambda_errors,
+        # The encrypted bucket's only writer and its key's user (client_side_encryption only)
+        cse_encryptor=pipeline_stack.cse_encryptor,
         env=env,
     )
 

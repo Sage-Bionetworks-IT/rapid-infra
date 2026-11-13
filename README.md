@@ -42,8 +42,8 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 
 | Stack | Purpose |
 |---|---|
-| `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
-| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket, alarms and the S3 data-events trail. Shared by all buckets |
+| `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`; with `client_side_encryption`, also its encrypted bucket and CSE key. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
+| `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas (and Encrypt and DeleteStaged with client-side encryption), Synapse PAT secret, results bucket, alarms and the S3 data-events trail. Shared by all buckets |
 
 Adding a provider is a config change: add a `BUCKETS` entry to `config/{env}.yaml`.
 
@@ -62,6 +62,8 @@ which for each bucket, idempotently, as the sync service account:
 3. Creates `SYNAPSE.project_folders` in the project.
 4. Creates the empty STS "shim" folder (`sts_folder`, default `sts`), with an STS location on the
    whole bucket: contributors with edit access on it get read-write STS credentials to upload.
+   With `client_side_encryption`, also the location on the encrypted bucket that encrypted files
+   are indexed through (on no project or folder, so not an upload destination).
 5. `apply_project_template()`: a placeholder for the rest of the project setup (teams and
    permissions, versioned folder structures, schema bindings, file views, curation tasks), along
    the lines of [htan2_project_setup](https://github.com/ncihtan/htan2_project_setup).
@@ -139,6 +141,71 @@ own bucket name, Synapse project and `kms_encryption: true`. Switching an existi
 way is safe but only affects new objects: existing ones keep the encryption they were written
 with.
 
+### Client-side encryption (opt-in)
+
+SSE (S3 or KMS) protects the disks: anyone allowed to read the object, through S3 or a Synapse
+download, gets the plaintext. For files that need more, `client_side_encryption` on a
+`BUCKETS` entry has the pipeline encrypt them, so the object itself is ciphertext and reading
+it takes a KMS grant on top of Synapse's access controls:
+
+```yaml
+    client_side_encryption:
+      encrypted_bucket_name: rapid-dev-example-encrypted  # a second bucket, globally unique
+      patterns: ["**/*.vcf", "clinical/**"]                # which keys are encrypted
+      decrypt_arns: [arn:aws:iam::123456789012:role/analysis]  # who may decrypt
+```
+
+Contributors change nothing: STS credentials have no KMS permissions (see SSE-KMS), so they
+upload to the provider bucket as usual, which becomes the **staging** bucket. When the sidecar
+lands, each file of the folder goes through:
+
+1. **EncryptFile**: a key matching one of `patterns` (globs on the whole S3 key, `**` spans
+   folders, `*` does not) is streamed through the
+   [AWS Encryption SDK](https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/)
+   (envelope encryption, committing and signed algorithm suite) into
+   `s3://<encrypted_bucket_name>/<key>.encrypted`. The data key comes from the provider's own
+   KMS key, `alias/cse/<encrypted_bucket_name>`, with the encryption context
+   `rapid:provider=<id>`, `rapid:bucket`, `rapid:key`. Other files are left as they are
+2. **SyncFile** indexes the ciphertext in the provider's Synapse project, as
+   `<folder>/<name>.encrypted` (unmatched files are indexed from staging, as without CSE)
+3. **DeleteStaged** deletes the plaintext from staging, only once Synapse has the ciphertext,
+   and only if it is still the object that was encrypted (`If-Match` on its ETag): a file
+   re-uploaded meanwhile is left for its own sidecar
+
+What protects what:
+
+- The CSE key's policy lets only the pipeline's Encrypt role generate data keys and only
+  `decrypt_arns` decrypt, both only with this provider's encryption context. Our account's
+  admins can also use it through the default root statement (as for the SSE-KMS keys). Key
+  changes email `ALARM_EMAIL`. Rotated yearly, retained with the bucket
+- The encrypted bucket: only the Encrypt role may write (bucket policy, `owner.txt` aside),
+  nobody but `s3_admin_arns` may delete, Synapse's account may only read (to serve downloads),
+  STS sessions are denied everything. Versioned, SSE-S3 (the objects are ciphertext already),
+  `DATA_STORE_TAGS`, in the S3 data-events trail. Synapse indexes it through a storage location
+  that is not an upload destination, so nothing can be uploaded there through Synapse. The
+  setup job creates that location; the pipeline's `ResolveStorage` finds it among the service
+  account's locations
+- A Synapse download returns ciphertext. To read a file, a principal in `decrypt_arns`:
+
+  ```console
+  python tools/decrypt.py --key-arn <CseKeyArn output> --provider <id> syn123
+  ```
+
+  or the AWS Encryption CLI (the command is in `tools/decrypt.py`'s docstring)
+
+Limits and caveats:
+
+- Files over 10 GiB fail (`FileTooLargeError`, one email per execution): Encrypt is a Lambda
+  with 15 minutes. Larger files need a Fargate task
+- The plaintext sits in staging from upload until its sidecar's execution has indexed the
+  ciphertext; if the sidecar never comes, it stays. STS contributors cannot read it back
+- The staging bucket must not be versioned (synth fails): the deleted plaintext would survive
+  as a noncurrent version
+- Adding a pattern, or CSE, to a bucket does not touch files already indexed: they stay
+  plaintext in staging. Re-uploading their sidecar encrypts them, but their earlier Synapse
+  entities (plaintext, now pointing at a deleted object) remain: delete those by hand
+- Re-running a sidecar does not re-encrypt a file whose ciphertext is already there for the
+  same staged ETag, so Synapse gets no new version
 
 ### S3 data events (audit trail)
 
@@ -184,6 +251,10 @@ BUCKETS:
     deny_delete_arns: []
     versioned: false
     kms_encryption: false            # optional: SSE-KMS with the bucket's own key (see SSE-KMS)
+    client_side_encryption:          # optional: see Client-side encryption
+      encrypted_bucket_name: rapid-dev-example-encrypted
+      patterns: ["**/*.vcf"]
+      decrypt_arns: []
 ```
 
 ## Contributing data (providers)
