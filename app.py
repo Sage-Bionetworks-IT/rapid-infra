@@ -22,6 +22,21 @@ for key, value in (config.get("TAGS") or {}).items():
     cdk.Tags.of(cdk_app).add(key, value)
 
 buckets = config.get("BUCKETS") or []
+lambda_errors = (config.get("LAMBDA_ERROR_ALARMS") or {}).get("errors_per_5_minutes", 1)
+
+# One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
+# reference, so bucket stacks come and go without export/import ordering. Bucket stacks import
+# its alarm topic; deleting an importing stack is always allowed.
+if buckets:
+    pipeline_stack = SyncPipelineStack(
+        scope=cdk_app,
+        construct_id=f"{STACK_NAME_PREFIX}-pipeline",
+        buckets=buckets,
+        sync_config=config["SYNC"],
+        alarm_email=config.get("ALARM_EMAIL") or "",
+        lambda_errors_per_5_minutes=lambda_errors,
+        env=env,
+    )
 
 # One stack per data provider bucket, so each can be added or retired on its own
 for bucket in buckets:
@@ -31,18 +46,9 @@ for bucket in buckets:
         bucket_config=bucket,
         synapse_account_id=config["SYNAPSE"]["aws_account_id"],
         synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
-        env=env,
-    )
-
-# One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
-# reference, so bucket stacks come and go without export/import ordering.
-if buckets:
-    SyncPipelineStack(
-        scope=cdk_app,
-        construct_id=f"{STACK_NAME_PREFIX}-pipeline",
-        buckets=buckets,
-        sync_config=config["SYNC"],
-        alarm_email=config.get("ALARM_EMAIL") or "",
+        data_store_tags=config.get("DATA_STORE_TAGS"),
+        alarm_topic=pipeline_stack.alarm_topic,
+        lambda_errors_per_5_minutes=lambda_errors,
         env=env,
     )
 
