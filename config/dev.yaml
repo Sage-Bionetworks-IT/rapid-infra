@@ -10,7 +10,7 @@ BUCKETS:
     # read-write STS credentials for the bucket (files are indexed at the project root)
     sts_folder: sts
     # Synapse user or team IDs written to owner.txt (the service account is added for you)
-    synapse_owner_ids: [3627882]
+    synapse_owner_ids: [3627882] # "RAPID Test" team
     # Optional. IAM principals (ARNs) with read/write on the objects
     s3_user_arns: []
     # Optional. IAM principals (ARNs) with full access to the bucket
