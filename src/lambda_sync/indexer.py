@@ -30,6 +30,7 @@ import mimetypes
 import posixpath
 
 from synapseclient import Synapse
+from synapseclient.core.async_utils import wrap_async_to_sync
 from synapseclient.core.exceptions import SynapseHTTPError
 from synapseclient.models import File, Folder, Project, StorageLocation, StorageLocationType
 from synapseclient.operations import find_entity_id
@@ -112,22 +113,24 @@ def index_object(
         if existing.file_handle and existing.file_handle.content_md5 == md5:
             return {"status": "unchanged", "entity_id": existing_id}
 
-    file_handle = syn.restPOST(
-        "/externalFileHandle/s3",
-        json.dumps(
-            {
-                "concreteType": "org.sagebionetworks.repo.model.file.S3FileHandle",
-                "fileName": filename,
-                "contentSize": head["ContentLength"],
-                "contentType": mimetypes.guess_type(filename, strict=False)[0]
-                or head.get("ContentType"),
-                "contentMd5": md5,
-                "bucketName": bucket,
-                "key": key,
-                "storageLocationId": storage_location_id,
-            }
-        ),
-        endpoint=syn.fileHandleEndpoint,
+    file_handle = wrap_async_to_sync(
+        syn.rest_post_async(
+            "/externalFileHandle/s3",
+            body=json.dumps(
+                {
+                    "concreteType": "org.sagebionetworks.repo.model.file.S3FileHandle",
+                    "fileName": filename,
+                    "contentSize": head["ContentLength"],
+                    "contentType": mimetypes.guess_type(filename, strict=False)[0]
+                    or head.get("ContentType"),
+                    "contentMd5": md5,
+                    "bucketName": bucket,
+                    "key": key,
+                    "storageLocationId": storage_location_id,
+                }
+            ),
+            endpoint=syn.fileHandleEndpoint,
+        )
     )
 
     if existing is not None:

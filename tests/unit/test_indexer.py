@@ -42,7 +42,7 @@ class FakeSynapse:
     def by_id(self, entity_id):
         return next(e for e in self.entities.values() if e["id"] == entity_id)
 
-    def restPOST(self, uri, body, endpoint=None):
+    async def rest_post_async(self, uri, body=None, endpoint=None):
         assert uri == "/externalFileHandle/s3" and endpoint == self.fileHandleEndpoint
         handle = {**json.loads(body), "id": str(len(self.handles) + 1)}
         self.handles[handle["id"]] = handle
