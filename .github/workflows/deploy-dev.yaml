@@ -1,0 +1,18 @@
+name: deploy-dev
+
+on:
+  push:
+    branches: ['dev']
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yaml
+    with:
+      environment: dev
+  aws-deploy:
+    needs: test
+    uses: ./.github/workflows/aws-deploy.yaml
+    with:
+      role-to-assume: "arn:aws:iam::576802370683:role/sagebase-github-oidc-sage-bionetworks-rapid-dev-infra"
+      role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
+      environment: dev

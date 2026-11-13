@@ -1,0 +1,52 @@
+# Reusable: deploy every stack of one environment to its AWS account
+name: aws-deploy
+
+on:
+  workflow_call:
+    inputs:
+      aws-region:
+        type: string
+        default: us-east-1
+      role-to-assume:
+        required: true
+        type: string
+      role-session-name:
+        required: true
+        type: string
+      role-duration-seconds:
+        type: number
+        default: 3600
+      environment:
+        required: true
+        type: string
+
+# One deploy per environment at a time
+concurrency:
+  group: ${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.environment }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v6
+      - run: npm install -g aws-cdk
+      - run: pip install -r requirements.txt
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ inputs.aws-region }}
+          role-to-assume: ${{ inputs.role-to-assume }}
+          role-session-name: ${{ inputs.role-session-name }}
+          role-duration-seconds: ${{ inputs.role-duration-seconds }}
+      # No stacks yet, and the CDK CLI fails on an app without any: until the first one, a deploy
+      # only checks that the OIDC role is assumed, into the environment's account
+      - run: aws sts get-caller-identity

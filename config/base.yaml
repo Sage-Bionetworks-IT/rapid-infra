@@ -1,0 +1,8 @@
+# Loaded for every environment, then deep-merged with config/{env}.yaml: env wins, nested
+# mappings merge key by key (an env file only lists the keys it changes), lists are replaced.
+
+# Stack names are {PROJECT_NAME}-{env}-...
+PROJECT_NAME: rapid
+
+TAGS:
+  CostCenter: RAPID - ARPA-H - BP01 / 126500
