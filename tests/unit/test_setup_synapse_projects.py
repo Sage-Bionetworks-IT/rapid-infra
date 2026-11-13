@@ -36,9 +36,8 @@ class FakeSynapse:
         pass
 
     def create(self, name, parent_id):
-        if (parent_id, name) in self.entities or (
-            parent_id is None and name in self.invisible_projects
-        ):
+        taken = parent_id is None and name in self.invisible_projects
+        if (parent_id, name) in self.entities or taken:
             raise _http_error(409)
         self._next += 1
         self.entities[(parent_id, name)] = f"syn{self._next}"
@@ -47,75 +46,79 @@ class FakeSynapse:
     def children(self, parent_id):
         return {n: i for (p, n), i in self.entities.items() if p == parent_id}
 
+    def is_sts(self, location_id):
+        return next(sts for (_, sts), i in self.locations.items() if i == location_id)
 
-def _fakes(world):
-    def find_entity_id(name, parent=None, *, synapse_client):
-        assert synapse_client is world
-        return world.entities.get((parent, name))
 
-    class Container:
-        def __init__(self, id=None, name=None, parent_id=None, create_or_update=True):
-            self.id, self.name, self.parent_id = id, name, parent_id
-            assert create_or_update is False or id is not None
+# The fakes below get the FakeSynapse as synapse_client, as main() passes its Synapse() client
+# (the fixture makes that the FakeSynapse too)
 
-        def store(self, *, synapse_client):
-            self.id = world.create(self.name, self.parent_id)
-            return self
 
-        def get_project_setting(self, *, setting_type, synapse_client):
-            locations = world.settings.get(self.id)
-            return None if locations is None else SimpleNamespace(locations=locations)
+def fake_find_entity_id(name, parent=None, *, synapse_client):
+    return synapse_client.entities.get((parent, name))
 
-        def set_storage_location(self, *, storage_location_id, synapse_client):
-            world.settings[self.id] = [storage_location_id]
 
-    def is_sts(location_id):
-        return next(sts for (_, sts), i in world.locations.items() if i == location_id)
+class FakeContainer:
+    def __init__(self, id=None, name=None, parent_id=None, create_or_update=True):
+        assert create_or_update is False or id is not None, "creates must not update"
+        self.id, self.name, self.parent_id = id, name, parent_id
 
-    class Project(Container):
-        def set_storage_location(self, *, storage_location_id, synapse_client):
-            if is_sts(storage_location_id):
-                raise _http_error(400)  # "Can only enable STS on a folder"
-            super().set_storage_location(
-                storage_location_id=storage_location_id, synapse_client=synapse_client
-            )
+    def store(self, *, synapse_client):
+        self.id = synapse_client.create(self.name, self.parent_id)
+        return self
 
-    class Folder(Container):
-        def set_storage_location(self, *, storage_location_id, synapse_client):
-            if is_sts(storage_location_id) and world.children(self.id):
-                raise _http_error(400)  # STS only on an empty folder
-            super().set_storage_location(
-                storage_location_id=storage_location_id, synapse_client=synapse_client
-            )
+    def get_project_setting(self, *, setting_type, synapse_client):
+        locations = synapse_client.settings.get(self.id)
+        return None if locations is None else SimpleNamespace(locations=locations)
 
-    class StorageLocation:
-        def __init__(self, *, storage_type, bucket, sts_enabled=None):
-            self.bucket, self.sts = bucket, bool(sts_enabled)
+    def set_storage_location(self, *, storage_location_id, synapse_client):
+        synapse_client.settings[self.id] = [storage_location_id]
 
-        def store(self, *, synapse_client):
-            key = (self.bucket, self.sts)
-            self.storage_location_id = world.locations.setdefault(key, 1000 + len(world.locations))
-            return self
 
-    class UserProfile:
-        def get(self, *, synapse_client):
-            return SimpleNamespace(id=world.user)
+class FakeProject(FakeContainer):
+    def set_storage_location(self, *, storage_location_id, synapse_client):
+        if synapse_client.is_sts(storage_location_id):
+            raise _http_error(400)  # "Can only enable STS on a folder"
+        super().set_storage_location(
+            storage_location_id=storage_location_id, synapse_client=synapse_client
+        )
 
-    return {
-        "find_entity_id": find_entity_id,
-        "Project": Project,
-        "Folder": Folder,
-        "StorageLocation": StorageLocation,
-        "UserProfile": UserProfile,
-    }
+
+class FakeFolder(FakeContainer):
+    def set_storage_location(self, *, storage_location_id, synapse_client):
+        if synapse_client.is_sts(storage_location_id) and synapse_client.children(self.id):
+            raise _http_error(400)  # STS only on an empty folder
+        super().set_storage_location(
+            storage_location_id=storage_location_id, synapse_client=synapse_client
+        )
+
+
+class FakeStorageLocation:
+    def __init__(self, *, storage_type, bucket, sts_enabled=None):
+        self.bucket, self.sts = bucket, bool(sts_enabled)
+
+    def store(self, *, synapse_client):
+        # Synapse returns the user's existing identical location
+        locations = synapse_client.locations
+        self.storage_location_id = locations.setdefault(
+            (self.bucket, self.sts), 1000 + len(locations)
+        )
+        return self
+
+
+class FakeUserProfile:
+    def get(self, *, synapse_client):
+        return SimpleNamespace(id=synapse_client.user)
 
 
 @pytest.fixture
 def syn(monkeypatch):
     world = FakeSynapse()
-    for name, fake in _fakes(world).items():
-        monkeypatch.setattr(setup, name, fake)
-    # main()'s Synapse() client is the world itself, which the model fakes check they are given
+    monkeypatch.setattr(setup, "find_entity_id", fake_find_entity_id)
+    monkeypatch.setattr(setup, "Project", FakeProject)
+    monkeypatch.setattr(setup, "Folder", FakeFolder)
+    monkeypatch.setattr(setup, "StorageLocation", FakeStorageLocation)
+    monkeypatch.setattr(setup, "UserProfile", FakeUserProfile)
     monkeypatch.setattr(setup.synapseclient, "Synapse", lambda **kwargs: world)
     monkeypatch.setenv("SYNAPSE_AUTH_TOKEN", "pat")
     return world
