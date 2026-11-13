@@ -22,7 +22,7 @@ def bucket_template(app):
         app,
         "test-bucket-a",
         bucket_config=BUCKET,
-        synapse_account_id="325565585839",
+        aws_account_id="325565585839",
         synapse_service_account_id="1234567",
     )
     return Template.from_stack(stack)
@@ -81,7 +81,7 @@ def test_repo_configs_synthesize(app, env):
             app,
             f"bucket-{bucket['id']}",
             bucket_config=bucket,
-            synapse_account_id=config["SYNAPSE"]["aws_account_id"],
+            aws_account_id=config["SYNAPSE"]["aws_account_id"],
             synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
         )
     app.synth()
