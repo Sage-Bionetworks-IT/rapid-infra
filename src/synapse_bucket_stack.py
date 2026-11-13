@@ -12,6 +12,11 @@ from src.alarms import lambda_error_alarms
 
 OWNER_FILE = "owner.txt"
 
+# aws:userid of a Synapse STS session: "<role ID>:<session name>", the session name being
+# sts-<user id>-<entity id> (Synapse's StsManagerImpl). Matched by session name because Synapse's
+# temporary-credentials role is created per Synapse release, under a generated name and ID
+STS_SESSION_USERID = "*:sts-*"
+
 # KMS API calls on a bucket's key that email the alarm topic. CloudFormation makes some of them
 # (PutKeyPolicy) when a deploy changes the key, so an email outside a deploy is a manual change.
 # S3 never needs a grant for SSE-KMS, so any CreateGrant is unexpected
@@ -38,6 +43,10 @@ class SynapseBucketStack(cdk.Stack):
 
     - Bucket policy: Synapse's AWS account may list the bucket and read/write objects, as
       Synapse needs for uploads/downloads through Synapse clients
+    - Synapse STS credentials (how providers contribute) are write-only: Synapse issues them
+      with s3:GetObject, so the bucket policy denies their sessions any object read and any
+      pre-signed request. Data leaves only through Synapse downloads, under Synapse's access
+      controls, not through credentials that cover the whole bucket
     - owner.txt at the root, listing the Synapse users/teams allowed to create a storage
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
@@ -173,6 +182,8 @@ class SynapseBucketStack(cdk.Stack):
                 )
             )
 
+        self._deny_sts_reads(synapse_account_id)
+
         if self.key:
             self._enforce_kms(rw_principals + admin_principals, kms_key_users or [])
             if alarm_topic is not None:
@@ -222,6 +233,47 @@ class SynapseBucketStack(cdk.Stack):
         cdk.CfnOutput(self, "BucketArn", value=self.bucket.bucket_arn)
         if self.key:
             cdk.CfnOutput(self, "KmsKeyArn", value=self.key.key_arn)
+
+    def _deny_sts_reads(self, synapse_account_id: str) -> None:
+        """
+        Make Synapse STS credentials write-only on this bucket. Synapse's read_write STS session
+        allows s3:GetObject on the whole bucket (our STS location has no base key), which would
+        let any contributor read every provider file, outside Synapse's access controls, and
+        mint pre-signed URLs for others. Synapse's own sessions (downloads, workers) are not
+        STS sessions, so they are unaffected.
+        """
+        sts_sessions = {
+            "StringEquals": {"aws:PrincipalAccount": synapse_account_id},
+            "StringLike": {"aws:userid": STS_SESSION_USERID},
+        }
+        # s3:GetObject* also covers HeadObject
+        self.bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyStsRead",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:GetObject*"],
+                resources=[self.bucket.arn_for_objects("*")],
+                conditions=sts_sessions,
+            )
+        )
+        # A pre-signed URL would hand an STS session's access (now writes) to whoever holds it
+        self.bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyStsPresigned",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:*"],
+                resources=[self.bucket.bucket_arn, self.bucket.arn_for_objects("*")],
+                conditions={
+                    "StringEquals": {
+                        **sts_sessions["StringEquals"],
+                        "s3:authType": "REST-QUERY-STRING",
+                    },
+                    "StringLike": sts_sessions["StringLike"],
+                },
+            )
+        )
 
     def _enforce_kms(
         self, bucket_principals: list[iam.IPrincipal], key_users: list[iam.IPrincipal]

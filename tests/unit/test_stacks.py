@@ -132,6 +132,26 @@ def test_bucket_policy_grants_synapse_and_provider(bucket_template):
     assert "AdminAccess" not in statements  # no admins configured
 
 
+@pytest.mark.parametrize("template", ["bucket_template", "kms_bucket_template"])
+def test_sts_sessions_are_write_only(template, request):
+    statements = _statements(request.getfixturevalue(template), "AWS::S3::BucketPolicy")
+    sts_only = {
+        "StringEquals": {"aws:PrincipalAccount": "325565585839"},
+        "StringLike": {"aws:userid": "*:sts-*"},
+    }
+    read = statements["DenyStsRead"]
+    assert read["Effect"] == "Deny" and read["Principal"] == {"AWS": "*"}
+    assert read["Action"] == "s3:GetObject*"  # covers HeadObject
+    assert read["Condition"] == sts_only
+    presigned = statements["DenyStsPresigned"]
+    assert presigned["Effect"] == "Deny" and presigned["Action"] == "s3:*"
+    assert presigned["Condition"] == {
+        "StringEquals": {**sts_only["StringEquals"], "s3:authType": "REST-QUERY-STRING"},
+        "StringLike": sts_only["StringLike"],
+    }
+    assert len(presigned["Resource"]) == 2  # the bucket and its objects
+
+
 def test_owner_file_includes_service_account(bucket_template):
     (owner,) = bucket_template.find_resources("Custom::AWS").values()
     create = json.dumps(owner["Properties"]["Create"])
