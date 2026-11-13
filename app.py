@@ -28,7 +28,7 @@ for bucket in buckets:
         scope=cdk_app,
         construct_id=f"{STACK_NAME_PREFIX}-bucket-{bucket['id']}",
         bucket_config=bucket,
-        aws_account_id=config["SYNAPSE"]["aws_account_id"],
+        synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
         synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
         env=env,
     )

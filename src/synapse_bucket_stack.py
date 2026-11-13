@@ -30,7 +30,7 @@ class SynapseBucketStack(cdk.Stack):
         scope: Construct,
         construct_id: str,
         bucket_config: dict,
-        aws_account_id: str,
+        synapse_aws_account_id: str,
         synapse_service_account_id: str,
         **kwargs,
     ) -> None:
@@ -74,7 +74,7 @@ class SynapseBucketStack(cdk.Stack):
         )
 
         # Synapse plus any extra read/write users get the same access
-        rw_principals = [iam.AccountPrincipal(aws_account_id)] + [
+        rw_principals = [iam.AccountPrincipal(synapse_aws_account_id)] + [
             iam.ArnPrincipal(arn) for arn in bucket_config.get("s3_user_arns", [])
         ]
         self.bucket.add_to_resource_policy(
