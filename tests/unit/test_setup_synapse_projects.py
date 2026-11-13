@@ -36,7 +36,9 @@ class FakeSynapse:
         pass
 
     def create(self, name, parent_id):
-        if (parent_id, name) in self.entities or (parent_id is None and name in self.invisible_projects):
+        if (parent_id, name) in self.entities or (
+            parent_id is None and name in self.invisible_projects
+        ):
             raise _http_error(409)
         self._next += 1
         self.entities[(parent_id, name)] = f"syn{self._next}"
@@ -204,11 +206,13 @@ def test_main_continues_past_a_failing_bucket_and_fails(syn, monkeypatch):
     two = {
         "PROJECT_NAME": "rapid",
         "SYNAPSE": {"service_account_id": SERVICE_ACCOUNT},
-        "BUCKETS": [BUCKET, {**BUCKET, "id": "b", "bucket_name": "rapid-test-b", "synapse_project_name": "RAPID B"}],
+        "BUCKETS": [
+            BUCKET,
+            {**BUCKET, "id": "b", "bucket_name": "rapid-test-b", "synapse_project_name": "RAPID B"},
+        ],
     }
     monkeypatch.setattr(setup, "load_context_config", lambda env: two)
     syn.invisible_projects.add("RAPID A")
 
     assert setup.main(["--env", "dev"]) == 1
     assert (None, "RAPID B") in syn.entities
-

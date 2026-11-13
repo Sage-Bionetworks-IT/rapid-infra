@@ -171,9 +171,9 @@ def ensure_folders(syn, project_id: str, paths: list) -> None:
 
 
 def _create_folder(syn, name: str, parent_id: str) -> str:
-    return Folder(name=name, parent_id=parent_id, create_or_update=False).store(
-        synapse_client=syn
-    ).id
+    return (
+        Folder(name=name, parent_id=parent_id, create_or_update=False).store(synapse_client=syn).id
+    )
 
 
 def apply_project_template(syn, project_id: str, bucket: dict) -> None:
