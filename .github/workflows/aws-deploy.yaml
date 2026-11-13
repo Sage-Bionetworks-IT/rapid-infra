@@ -1,4 +1,5 @@
-# Reusable: deploy every stack of one environment to its AWS account
+# Reusable: deploy every stack of one environment to its AWS account, then set up each
+# bucket's Synapse project
 name: aws-deploy
 
 on:
@@ -19,6 +20,10 @@ on:
       environment:
         required: true
         type: string
+    secrets:
+      # The Synapse service account's PAT (SYNAPSE.service_account_id)
+      SYNAPSE_AUTH_TOKEN:
+        required: true
 
 # One deploy per environment at a time
 concurrency:
@@ -47,6 +52,23 @@ jobs:
           role-to-assume: ${{ inputs.role-to-assume }}
           role-session-name: ${{ inputs.role-session-name }}
           role-duration-seconds: ${{ inputs.role-duration-seconds }}
-      # No stacks yet, and the CDK CLI fails on an app without any: until the first one, a deploy
-      # only checks that the OIDC role is assumed, into the environment's account
-      - run: aws sts get-caller-identity
+      - run: cdk deploy --context env=${{ inputs.environment }} --all --concurrency 5 --require-approval never
+
+  # After the deploy, so every bucket and its owner.txt exist. Idempotent, so it runs every time
+  # (a failed run is fixed by "Re-run failed jobs"). No AWS credentials: it only calls Synapse.
+  synapse-setup:
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.environment }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt -r tools/requirements.txt
+      - run: python tools/setup_synapse_projects.py --env ${{ inputs.environment }}
+        env:
+          SYNAPSE_AUTH_TOKEN: ${{ secrets.SYNAPSE_AUTH_TOKEN }}

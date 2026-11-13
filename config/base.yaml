@@ -1,8 +1,24 @@
 # Loaded for every environment, then deep-merged with config/{env}.yaml: env wins, nested
 # mappings merge key by key (an env file only lists the keys it changes), lists are replaced.
 
-# Stack names are {PROJECT_NAME}-{env}-...
+# Stack names are {PROJECT_NAME}-{env}-bucket-{id}
 PROJECT_NAME: rapid
 
 TAGS:
   CostCenter: RAPID - ARPA-H - BP01 / 126500
+
+SYNAPSE:
+  # Synapse's AWS account; it reads/writes the bucket for Synapse uploads and downloads.
+  # https://help.synapse.org/docs/Custom-Storage-Locations.2048327803.html
+  aws_account_id: "325565585839"
+  # The Synapse user the sync will log in as. It is added to every bucket's owner.txt, since
+  # it must create the storage locations. Its PAT is the SYNAPSE_AUTH_TOKEN GitHub secret, with
+  # which deploys set up each bucket's Synapse project (tools/setup_synapse_projects.py).
+  service_account_id: "0000000"  # TODO: set the service account's Synapse user ID
+  # Folders created in every provider project, as paths ("a/b" nests b in a); existing ones
+  # are kept. TODO: RAPID's folder structure, then the rest of the project setup
+  # (tools/setup_synapse_projects.py: apply_project_template)
+  project_folders: []
+
+# Synapse-connected buckets. One stack per entry; see config/dev.yaml for the fields.
+BUCKETS: []
