@@ -146,6 +146,13 @@ def test_creates_project_on_the_bucket_with_folders_and_sts_shim(syn):
     assert result["sts_location_id"] == sts_location
 
 
+def test_prints_the_contribute_command_for_the_provider(syn, capsys):
+    result = setup.setup_project(syn, BUCKET, [])
+    out = capsys.readouterr().out
+    assert f"tools/contribute.py --sts-folder {result['sts_folder_id']}" in out
+    assert "s3://rapid-test-a/<s3-folder>/" in out
+
+
 def test_rerun_changes_nothing(syn):
     first = setup.setup_project(syn, BUCKET, FOLDERS)
     entities, settings = dict(syn.entities), dict(syn.settings)
