@@ -8,17 +8,24 @@ its own S3 bucket, connected to its own Synapse project. Providers upload a fold
 then a `sidecar.json` in it; the sidecar's arrival indexes every file in the folder into the
 provider's Synapse project, as Synapse files that point at the S3 objects (no data is copied).
 
+Providers upload with **read-write STS credentials** that Synapse issues from an empty `sts`
+"shim" folder in their project ([Synapse STS](https://docs.synapse.org/synapse-docs/compute-directly-on-data-in-synapse-or-s3)),
+so they need a Synapse account with edit access to it, not AWS credentials.
+`tools/contribute.py` does the whole contribution in one command.
+
 ```
-provider uploads s3://<provider-bucket>/<folder>/...files...
-then writes      s3://<provider-bucket>/<folder>/sidecar.json   ← written LAST
+provider (contribute.py, STS credentials from <project>/sts)
+  uploads        s3://<provider-bucket>/<folder>/...files...
+  then writes    s3://<provider-bucket>/<folder>/sidecar.json   ← written LAST
   → S3 "Object Created" → EventBridge rule (*/sidecar.json, configured buckets only)
     → Step Functions  rapid-{env}-pipeline
         Prepare         validate the sidecar, take the bucket's Synapse project (from config)
-        ResolveStorage  look up the project and its storage location on the bucket (set up
-                        after each deploy by tools/setup_synapse_projects.py, never here)
+        ResolveStorage  look up the project and its (non-STS) storage location on the bucket
+                        (set up after each deploy by tools/setup_synapse_projects.py, never here)
         SyncFiles       Distributed Map over every object under <folder>/
                           → sync Lambda per object: Synapse folders for the key's path,
-                            then an external S3 file handle + File entity
+                            then an external S3 file handle + File entity, at
+                            <project>/<folder>/... (the same path as in S3)
     → per-file results in the results bucket; a failed execution emails ALARM_EMAIL
 ```
 
@@ -84,11 +91,48 @@ BUCKETS:
     synapse_project_name: RAPID dev example  # created by the deploy; names are global
     sts_folder: sts                  # the project's STS shim folder
     synapse_owner_ids: []            # owner.txt; the service account is always added
-    s3_user_arns: []                 # provider principals with read/write (cross-account OK)
+    sts_folder: sts                  # optional: the STS shim folder's name in the project
+    s3_user_arns: []                 # optional: IAM principals with read/write (not needed with STS)
     s3_admin_arns: []
     deny_delete_arns: []
     versioned: false
 ```
+
+## Contributing data (providers)
+
+```console
+pip install synapseclient boto3
+export SYNAPSE_AUTH_TOKEN=<personal access token>     # or ~/.synapseConfig
+python tools/contribute.py --sts-folder <sts folder synID> ./my-batch data/my-batch
+```
+
+This uploads every file under `./my-batch` to `s3://<bucket>/data/my-batch/…` and then writes
+`data/my-batch/sidecar.json`, only if every upload succeeded. The files appear in the project at
+`data/my-batch/…`. `--dry-run` lists what it would do.
+
+To upload with other tools, get the credentials yourself
+(`Folder(id=<sts>).get_sts_storage_token(permission="read_write", output_format="shell")`) and
+note:
+
+- **Every write needs the `bucket-owner-full-control` ACL** (`aws s3 cp … --acl
+  bucket-owner-full-control`, boto3 `ExtraArgs={"ACL": "bucket-owner-full-control"}`, rclone
+  `acl = bucket-owner-full-control`). Synapse's STS policy requires it; it is a no-op on our
+  buckets, which own every object (`BucketOwnerEnforced`), but writes without it are denied.
+  No bucket setting can supply it.
+- Credentials last 12 hours and cover the **whole bucket**: anywhere can be written, and an
+  overwrite or delete of an already-indexed file leaves Synapse pointing at changed or missing
+  data.
+- Write the sidecar last.
+- Do not upload through the Synapse website into the `sts` folder: those files would land at
+  keys Synapse chooses and live in the shim, not the index.
+
+### Why a shim
+
+Synapse only enables STS on a folder, never a project (`400 Can only enable STS on a folder`),
+only on an empty folder, and with no other storage location. Files in an STS folder cannot
+be moved to a folder with another storage location. So the `sts` folder only vends
+credentials, and indexed files go elsewhere in the project on a non-STS location on the same
+bucket: their Synapse path is their S3 key, and curators can reorganize them freely.
 
 ## The sidecar
 
@@ -194,13 +238,17 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 ### Per provider bucket
 
 1. Add the `BUCKETS` entry, with a `synapse_project_name` not used anywhere in Synapse, and
-   merge; CI deploys the bucket stack, then sets up its Synapse project.
-2. Share the project with the provider only (until `apply_project_template()` does it).
+   merge; CI deploys the bucket stack, then sets up its Synapse project, including the empty
+   `sts` shim folder.
+2. Share the project with the provider only (until `apply_project_template()` does it): edit
+   access, or at least edit access to its `sts` folder.
+3. Send the provider the `contribute.py` command the setup job prints in its log, with the
+   `sts` folder's ID (also in the job summary).
 
 The pipeline never creates a project or storage location: each execution's `ResolveStorage`
-step looks up the bucket's project by name and its storage location on the bucket. If either
-is missing (the setup job failed, or has not run yet), the execution fails without retrying
-and emails `ALARM_EMAIL`; rerun the setup job, then re-upload the sidecar.
+step looks up the bucket's project by name and its non-STS storage location on the bucket. If
+either is missing (the setup job failed, or has not run yet), the execution fails without
+retrying and emails `ALARM_EMAIL`; rerun the setup job, then re-upload the sidecar.
 
 ### Watching a sync
 

@@ -158,7 +158,7 @@ def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
             f"{_SYNAPSE_NAME.pattern}"
         )
     folder = bucket.get("sts_folder", DEFAULT_STS_FOLDER)
-    if not isinstance(folder, str) or not _SYNAPSE_NAME.match(folder):
+    if not isinstance(folder, str) or not folder.strip() or not _SYNAPSE_NAME.match(folder):
         raise ValueError(f"{where}.sts_folder must be a folder name, got '{folder}'")
     for field in _BUCKET_LIST_FIELDS:
         if not isinstance(bucket.get(field, []), list):
