@@ -52,6 +52,9 @@ jobs:
           role-to-assume: ${{ inputs.role-to-assume }}
           role-session-name: ${{ inputs.role-session-name }}
           role-duration-seconds: ${{ inputs.role-duration-seconds }}
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - run: cdk deploy --context env=${{ inputs.environment }} --all --concurrency 5 --require-approval never
 
   # After the deploy, so every bucket and its owner.txt exist. Idempotent, so it runs every time
