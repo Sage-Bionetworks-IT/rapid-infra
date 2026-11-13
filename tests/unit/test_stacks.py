@@ -9,7 +9,7 @@ from src.utils import load_context_config
 BUCKET = {
     "id": "a",
     "bucket_name": "rapid-test-a",
-    "synapse_project_id": "syn111",
+    "synapse_project_name": "RAPID A",
     "synapse_owner_ids": ["3333333"],
     "s3_user_arns": ["arn:aws:iam::111111111111:role/provider-a"],
     "deny_delete_arns": ["arn:aws:iam::111111111111:role/provider-a"],

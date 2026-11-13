@@ -20,6 +20,9 @@ class SynapseBucketStack(cdk.Stack):
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
     - The bucket is retained when the stack is deleted
+
+    Its Synapse project is set up by tools/setup_synapse_projects.py, which CI runs after every
+    deploy: never create it by hand, since a new project uploads to Synapse's default storage.
     """
 
     def __init__(
@@ -147,4 +150,3 @@ class SynapseBucketStack(cdk.Stack):
 
         cdk.CfnOutput(self, "BucketName", value=self.bucket.bucket_name)
         cdk.CfnOutput(self, "BucketArn", value=self.bucket.bucket_arn)
-        cdk.CfnOutput(self, "SynapseProjectId", value=bucket_config["synapse_project_id"])

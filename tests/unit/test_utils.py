@@ -8,10 +8,14 @@ from src.utils import _deep_merge, load_context_config, validate_config
 
 VALID = {
     "PROJECT_NAME": "rapid",
-    "SYNAPSE": {"aws_account_id": "325565585839", "service_account_id": "1234567"},
+    "SYNAPSE": {
+        "aws_account_id": "325565585839",
+        "service_account_id": "1234567",
+        "project_folders": ["raw", "processed/level_1"],
+    },
     "BUCKETS": [
-        {"id": "a", "bucket_name": "rapid-test-a", "synapse_project_id": "syn1"},
-        {"id": "b", "bucket_name": "rapid-test-b", "synapse_project_id": "syn2"},
+        {"id": "a", "bucket_name": "rapid-test-a", "synapse_project_name": "RAPID A"},
+        {"id": "b", "bucket_name": "rapid-test-b", "synapse_project_name": "RAPID B"},
     ],
 }
 
@@ -137,10 +141,16 @@ def test_missing_project_name_rejected():
 @pytest.mark.parametrize(
     "changes, message",
     [
-        ({"BUCKETS__1__synapse_project_id": "syn1"}, "used by another bucket"),
+        ({"BUCKETS__1__synapse_project_name": "RAPID A"}, "used by another bucket"),
         ({"BUCKETS__1__bucket_name": "rapid-test-a"}, "used by another bucket"),
         ({"BUCKETS__1__id": "a"}, "used by another bucket"),
-        ({"BUCKETS__0__synapse_project_id": "12345"}, "must look like syn123"),
+        ({"BUCKETS__0__synapse_project_name": "a/b"}, "synapse_project_name"),
+        ({"BUCKETS__0__sts_folder": "a/b"}, "sts_folder must be a folder name"),
+        ({"BUCKETS__0__sts_folder": ""}, "sts_folder must be a folder name"),
+        ({"SYNAPSE__project_folders": ["sts/x"]}, "must not create folders in 'sts'"),
+        ({"SYNAPSE__project_folders": "raw"}, "project_folders must be a list"),
+        ({"SYNAPSE__project_folders": ["raw//x"]}, "project_folders"),
+        ({"SYNAPSE__project_folders": ["raw:x"]}, "project_folders"),
         ({"BUCKETS__0__bucket_name": "Not_A_Bucket"}, "not a valid S3 bucket name"),
         ({"BUCKETS__0__id": "Has Spaces"}, "must match"),
         ({"BUCKETS__0__synapse_owner_ids": ["jdoe"]}, "not a numeric Synapse ID"),
@@ -156,6 +166,6 @@ def test_invalid_config_rejected(changes, message):
 
 def test_missing_bucket_field_rejected():
     config = copy.deepcopy(VALID)
-    del config["BUCKETS"][0]["synapse_project_id"]
-    with pytest.raises(ValueError, match=r"BUCKETS\[0\].synapse_project_id is required"):
+    del config["BUCKETS"][0]["synapse_project_name"]
+    with pytest.raises(ValueError, match=r"BUCKETS\[0\].synapse_project_name is required"):
         validate_config(config)

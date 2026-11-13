@@ -3,5 +3,5 @@ BUCKETS:
   # this bucket. Fields are documented in config/dev.yaml.
   - id: example
     bucket_name: rapid-prod-example-data  # TODO
-    synapse_project_id: syn00000001  # TODO
+    synapse_project_name: RAPID example  # TODO
     synapse_owner_ids: []

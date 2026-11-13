@@ -12,8 +12,13 @@ SYNAPSE:
   # https://help.synapse.org/docs/Custom-Storage-Locations.2048327803.html
   aws_account_id: "325565585839"
   # The Synapse user the sync will log in as. It is added to every bucket's owner.txt, since
-  # it must create the storage location.
+  # it must create the storage locations. Its PAT is the SYNAPSE_AUTH_TOKEN GitHub secret, with
+  # which deploys set up each bucket's Synapse project (tools/setup_synapse_projects.py).
   service_account_id: "0000000"  # TODO: set the service account's Synapse user ID
+  # Folders created in every provider project, as paths ("a/b" nests b in a); existing ones
+  # are kept. TODO: RAPID's folder structure, then the rest of the project setup
+  # (tools/setup_synapse_projects.py: apply_project_template)
+  project_folders: []
 
 # Synapse-connected buckets. One stack per entry; see config/dev.yaml for the fields.
 BUCKETS: []
