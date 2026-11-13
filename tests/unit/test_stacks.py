@@ -1,6 +1,8 @@
 import json
 
+import aws_cdk as cdk
 import pytest
+from aws_cdk import aws_sns as sns
 from aws_cdk.assertions import Match, Template
 
 from src.synapse_bucket_stack import SynapseBucketStack
@@ -25,12 +27,16 @@ SYNC = {
 
 @pytest.fixture
 def bucket_template(app):
+    # The alarm topic lives in another stack (the pipeline's), as in app.py
+    topic = sns.Topic(cdk.Stack(app, "test-topic"), "AlarmTopic")
     stack = SynapseBucketStack(
         app,
         "test-bucket-a",
         bucket_config=BUCKET,
         synapse_account_id="325565585839",
         synapse_service_account_id="1234567",
+        data_store_tags={"DataClass": "internal"},
+        alarm_topic=topic,
     )
     return Template.from_stack(stack)
 
@@ -205,9 +211,82 @@ def test_failure_email(pipeline_template):
     )
 
 
+def _alarms(template, metric_name):
+    return {
+        k: a["Properties"]
+        for k, a in template.find_resources("AWS::CloudWatch::Alarm").items()
+        if a["Properties"].get("MetricName") == metric_name
+    }
+
+
+def _assert_plain_lambda_errors_alarm(props, function_logical_id):
+    # Vanta reads the top-level MetricName and the FunctionName dimension (no Metrics form)
+    assert "Metrics" not in props
+    assert props["Namespace"] == "AWS/Lambda"
+    assert props["Statistic"] == "Sum"
+    assert props["Period"] == 300
+    assert props["Threshold"] == 1
+    assert props["Dimensions"] == [{"Name": "FunctionName", "Value": {"Ref": function_logical_id}}]
+    assert len(props["AlarmActions"]) == 1
+
+
+def test_bucket_has_data_store_tags(bucket_template):
+    bucket_template.has_resource_properties(
+        "AWS::S3::Bucket",
+        {"Tags": Match.array_with([{"Key": "DataClass", "Value": "internal"}])},
+    )
+
+
+def test_data_store_tags_only_on_the_bucket(bucket_template):
+    for resource_type in ("AWS::Lambda::Function", "AWS::IAM::Role"):
+        for resource in bucket_template.find_resources(resource_type).values():
+            tags = resource["Properties"].get("Tags", [])
+            assert {"Key": "DataClass", "Value": "internal"} not in tags
+
+
+def test_bucket_lambda_has_errors_alarm_on_the_pipeline_topic(bucket_template):
+    # Vanta "Serverless function error rate monitored": the owner.txt custom resource's Lambda
+    (function_id,) = bucket_template.find_resources("AWS::Lambda::Function")
+    (props,) = _alarms(bucket_template, "Errors").values()
+    _assert_plain_lambda_errors_alarm(props, function_id)
+    assert props["AlarmName"] == "test-bucket-a-AwsCustomResource-errors"
+    assert "Fn::ImportValue" in props["AlarmActions"][0]
+
+
+def test_every_pipeline_lambda_has_errors_alarm(pipeline_template):
+    functions = pipeline_template.find_resources("AWS::Lambda::Function")
+    alarms = _alarms(pipeline_template, "Errors").values()
+    assert {a["Dimensions"][0]["Value"]["Ref"] for a in alarms} == set(functions)
+    assert len(alarms) == len(functions) == 3
+    for props in alarms:
+        _assert_plain_lambda_errors_alarm(props, props["Dimensions"][0]["Value"]["Ref"])
+        assert props["AlarmActions"][0]["Ref"].startswith("AlarmTopic")
+    assert {a["AlarmName"] for a in alarms} == {
+        "test-pipeline-PrepareFunction-errors",
+        "test-pipeline-SyncFunction-errors",
+        "test-pipeline-ResolveStorageFunction-errors",
+    }
+
+
+def test_rule_dlq_age_alarm(pipeline_template):
+    # Vanta "Messaging queue message age monitored": every queue, at most 5000 s
+    (props,) = _alarms(pipeline_template, "ApproximateAgeOfOldestMessage").values()
+    assert props["Dimensions"][0]["Name"] == "QueueName"
+    assert "SidecarRuleDLQ" in json.dumps(props["Dimensions"])
+    assert props["Statistic"] == "Maximum"
+    assert props["Threshold"] == 3600
+    assert props["AlarmActions"][0]["Ref"].startswith("AlarmTopic")
+
+
 @pytest.mark.parametrize("env", ["dev", "prod", "sandbox"])
 def test_repo_configs_synthesize(app, env):
+    # As app.py builds them
     config = load_context_config(env)
+    if not config["BUCKETS"]:
+        return
+    pipeline = SyncPipelineStack(
+        app, "pipeline", buckets=config["BUCKETS"], sync_config=config["SYNC"]
+    )
     for bucket in config["BUCKETS"]:
         SynapseBucketStack(
             app,
@@ -215,7 +294,7 @@ def test_repo_configs_synthesize(app, env):
             bucket_config=bucket,
             synapse_account_id=config["SYNAPSE"]["aws_account_id"],
             synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
+            data_store_tags=config.get("DATA_STORE_TAGS"),
+            alarm_topic=pipeline.alarm_topic,
         )
-    if config["BUCKETS"]:
-        SyncPipelineStack(app, "pipeline", buckets=config["BUCKETS"], sync_config=config["SYNC"])
     app.synth()
