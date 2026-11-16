@@ -1,0 +1,2 @@
+# Synapse resources of prod: one project per BUCKETS entry in config/aws/prod.yaml
+projects: []

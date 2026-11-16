@@ -1,0 +1,4 @@
+# Synapse resources of the sandbox (see config/aws/sandbox.yaml for running it)
+projects:
+  - name: RAPID sandbox provider
+    bucket: test

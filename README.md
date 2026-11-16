@@ -24,58 +24,75 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 |---|---|
 | `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
 
-Adding a provider is a config change: add a `BUCKETS` entry to `config/{env}.yaml`.
+Adding a provider is a config change: a `BUCKETS` entry in `config/aws/{env}.yaml` and its
+project in `config/synapse/{env}.yaml`.
 
 ### The provider's Synapse project
 
 Never create a provider's Synapse project by hand: until its upload destination is set, a new
-project stores uploads in Synapse's default S3 bucket, where RAPID data must not go. After every
-deploy, CI's `synapse-setup` job (`aws-deploy.yaml`) runs `tools/setup_synapse_projects.py`,
-which for each bucket, idempotently, as the sync service account:
+project stores uploads in Synapse's default S3 bucket, where RAPID data must not go. The CDK app
+deploys the AWS resources; the Synapse resources are declared separately, in
+`config/synapse/{env}.yaml`, and set up from the deploy's outputs, the way a Terraform resource
+would take another's output:
 
-1. Finds the project by `synapse_project_name`, or creates it. Renaming it in config makes a new
-   project, so rename it in Synapse first.
-2. Creates the bucket's external S3 storage location and makes it the project's **only** upload
-   destination (replacing any other, including Synapse's default storage). Synapse checks the
-   bucket's `owner.txt` for the service account, which is why this runs after the deploy.
-3. Creates `SYNAPSE.project_folders` in the project.
-4. Creates the empty STS "shim" folder (`sts_folder`, default `sts`), with an STS location on the
-   whole bucket: contributors with edit access on it get read-write STS credentials to upload.
-5. `apply_project_template()`: a placeholder for the rest of the project setup (teams and
-   permissions, versioned folder structures, schema bindings, file views, curation tasks), along
-   the lines of [htan2_project_setup](https://github.com/ncihtan/htan2_project_setup).
-
-The job summary lists each bucket's project, upload location and STS folder IDs. A bucket that
-fails does not stop the others; fix it and use "Re-run failed jobs". For the sandbox, run it
-after the deploy:
-
-```console
-SYNAPSE_AUTH_TOKEN=<PAT> python tools/setup_synapse_projects.py --env sandbox [--bucket ID]
 ```
+config/aws/dev.yaml           BUCKETS: [{id: example, bucket_name: ..., ...}]
+  → cdk deploy --all --outputs-file cdk-outputs.json
+      {"rapid-dev-bucket-example": {"BucketName": "...", "SynapseServiceAccountId": "..."}}
+config/synapse/dev.yaml       projects: [{name: RAPID dev provider 1, bucket: example}]
+  → tools/setup_synapse_projects.py --template config/synapse/dev.yaml --cdk-outputs cdk-outputs.json
+```
+
+After every deploy, CI's `synapse-setup` job (`aws-deploy.yaml`) runs the script with the deploy
+job's outputs (an artifact; the job needs no AWS credentials). For each project, idempotently,
+as the service account (the bucket stack's `SynapseServiceAccountId` output):
+
+1. Finds the project by name, or creates it. Renaming it in the template makes a new project,
+   so rename it in Synapse first.
+2. Creates the external S3 storage location on the deployed bucket (`BucketName`) and makes it
+   the project's **only** upload destination (replacing any other, including Synapse's default
+   storage). Synapse checks the bucket's `owner.txt` for the service account, which is why this
+   runs after the deploy.
+3. `apply_project_template()`: a placeholder for the rest of the project setup (provider and
+   admin teams and permissions, folder structures, schema bindings, file views, curation tasks),
+   along the lines of [htan2_project_setup](https://github.com/ncihtan/htan2_project_setup).
+
+The job summary lists each project's ID, bucket and upload location. A project that fails (say,
+its bucket stack is missing from the outputs) does not stop the others; fix it and use "Re-run
+failed jobs".
 
 ## Configuration
 
-`config/base.yaml` is always loaded, then deep-merged with the environment's config,
-`config/{env}.yaml` (`.yml` or `.json` also work, one file per env): the env file wins, nested
-mappings merge key by key so an env file only lists the keys it changes, and lists are replaced.
-Synth validates the result, and fails on bad IDs, duplicate bucket names, or two buckets
-with the same Synapse project: each provider's project is its own.
+Config is split by the system it configures:
+
+- `config/aws/` (the CDK app): `base.yaml` is always loaded, then deep-merged with the
+  environment's `config/aws/{env}.yaml` (`.yml` or `.json` also work, one file per env): the env
+  file wins, nested mappings merge key by key so an env file only lists the keys it changes, and
+  lists are replaced. Synth validates the result, and fails on bad IDs or duplicate bucket names.
+- `config/synapse/{env}.yaml` (`tools/setup_synapse_projects.py`): one project per bucket,
+  naming its `BUCKETS` id. A unit test checks every project's bucket is in the AWS config.
 
 ```yaml
-SYNAPSE:
-  project_folders: []                # created in every provider project ("a/b" nests)
-
+# config/aws/dev.yaml
 BUCKETS:
   - id: example                      # stack name suffix
     bucket_name: rapid-dev-example-data
-    synapse_project_name: RAPID dev example  # created by the deploy; names are global
-    sts_folder: sts                  # the project's STS shim folder
     synapse_owner_ids: []            # owner.txt; the service account is always added
     s3_user_arns: []                 # provider principals with read/write (cross-account OK)
     s3_admin_arns: []
     deny_delete_arns: []
     versioned: false
+
+# config/synapse/dev.yaml
+projects:
+  - name: RAPID dev provider 1       # Synapse project names are global
+    bucket: example                  # the BUCKETS id above
 ```
+
+`owner.txt` (`synapse_owner_ids`) lists who may register a storage location on the bucket, the
+service account always among them. Providers do not need to be in it: they only use the service
+account's locations (Synapse uploads, STS credentials), which takes permission on the project,
+not ownership of the bucket.
 
 ## Development
 
@@ -119,12 +136,14 @@ feature branch ──PR──▶ dev ──PR──▶ prod
 
 ### Sandbox
 
-`config/sandbox.yaml` is a personal test environment (`rapid-sandbox-*` stacks) in the DNT dev
+`config/aws/sandbox.yaml` is a personal test environment (`rapid-sandbox-*` stacks) in the DNT dev
 account, not RAPID's dev. It is the one environment deployed from a laptop, never by CI, and
 its `AWS_ACCOUNT` pins it so credentials for any other account fail the deploy:
 
 ```console
-cdk deploy --context env=sandbox --all --profile dnt-dev-admin
+cdk deploy --context env=sandbox --all --profile dnt-dev-admin --outputs-file cdk-outputs.json
+SYNAPSE_AUTH_TOKEN=<PAT> python tools/setup_synapse_projects.py \
+  --template config/synapse/sandbox.yaml --cdk-outputs cdk-outputs.json
 ```
 
 ### Adding a staging environment
@@ -132,21 +151,23 @@ cdk deploy --context env=sandbox --all --profile dnt-dev-admin
 For a dev → stage → prod flow, e.g. to try real provider data before prod:
 
 1. A stage AWS account and its GitHub OIDC deploy role (Sage IT)
-2. `config/stage.yaml` with its own `BUCKETS` (bucket names are global, so new names) and
-   Synapse projects
+2. `config/aws/stage.yaml` with its own `BUCKETS` (bucket names are global, so new names) and
+   `config/synapse/stage.yaml` with their projects
 3. `"stage"` in `VALID_ENVS` (`src/utils.py`)
 4. `.github/workflows/deploy-stage.yaml` (a copy of `deploy-dev.yaml`) and a `stage` branch
 5. Promote `dev` → `stage` → `prod`
 
 ### One-time setup per environment
 
-1. **Synapse service account.** Set its user ID in `SYNAPSE.service_account_id`. It is written
-   to every bucket's `owner.txt`, so it can create the bucket's Synapse storage location.
+1. **Synapse service account.** Set its user ID in `SYNAPSE.service_account_id`
+   (`config/aws/`). It is written to every bucket's `owner.txt`, so it can create the bucket's
+   Synapse storage location, and output by every bucket stack for the Synapse setup.
 2. **Its PAT** (view, download and modify scopes) as the `SYNAPSE_AUTH_TOKEN` repository
    secret, which `deploy-dev.yaml` and `deploy-prod.yaml` pass to the `synapse-setup` job.
 
 ### Per provider bucket
 
-1. Add the `BUCKETS` entry, with a `synapse_project_name` not used anywhere in Synapse, and
-   merge; CI deploys the bucket stack, then sets up its Synapse project.
+1. Add the `BUCKETS` entry (`config/aws/{env}.yaml`) and its project
+   (`config/synapse/{env}.yaml`), with a name not used anywhere in Synapse, and merge; CI deploys
+   the bucket stack, then sets up its Synapse project.
 2. Share the project with the provider only (until `apply_project_template()` does it).

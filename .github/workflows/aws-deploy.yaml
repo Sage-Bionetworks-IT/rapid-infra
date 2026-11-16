@@ -52,10 +52,18 @@ jobs:
           role-to-assume: ${{ inputs.role-to-assume }}
           role-session-name: ${{ inputs.role-session-name }}
           role-duration-seconds: ${{ inputs.role-duration-seconds }}
-      - run: cdk deploy --context env=${{ inputs.environment }} --all --concurrency 5 --require-approval never
+      # The outputs (every stack's, changed or not) are the Synapse setup's input
+      - run: >-
+          cdk deploy --context env=${{ inputs.environment }} --all --concurrency 5
+          --require-approval never --outputs-file cdk-outputs.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdk-outputs
+          path: cdk-outputs.json
 
-  # After the deploy, so every bucket and its owner.txt exist. Idempotent, so it runs every time
-  # (a failed run is fixed by "Re-run failed jobs"). No AWS credentials: it only calls Synapse.
+  # The Synapse template's projects, on the buckets the deploy just output (so every bucket and
+  # its owner.txt exist). Idempotent, so it runs every time (a failed run is fixed by "Re-run
+  # failed jobs"). No AWS credentials: it reads the deploy's outputs and only calls Synapse.
   synapse-setup:
     needs: deploy
     runs-on: ubuntu-latest
@@ -68,7 +76,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: pip install -r requirements.txt -r tools/requirements.txt
-      - run: python tools/setup_synapse_projects.py --env ${{ inputs.environment }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cdk-outputs
+      - run: pip install -r tools/requirements.txt
+      - run: >-
+          python tools/setup_synapse_projects.py
+          --template config/synapse/${{ inputs.environment }}.yaml
+          --cdk-outputs cdk-outputs.json
         env:
           SYNAPSE_AUTH_TOKEN: ${{ secrets.SYNAPSE_AUTH_TOKEN }}
