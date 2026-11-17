@@ -27,6 +27,9 @@ SYNC:
   tolerated_failure_percentage: 0
   # Days the per-run result files are kept in the results bucket
   results_retention_days: 90
+  # Days sidecar events (and re-run requests) are archived for replay (README: "Re-running a
+  # sync")
+  archive_retention_days: 90
 
 # Alarm emails (failed sync executions). Confirm the SNS subscription once. Empty: no email.
 ALARM_EMAIL: ""

@@ -132,7 +132,8 @@ every file in the folder is uploaded.
 - Everything under `<folder>/` is synced, including subfolders. Sidecars and folder markers are
   skipped.
 - Re-uploading the sidecar re-runs the folder. Files with an unchanged MD5 are left alone; a
-  changed file becomes a new version of its Synapse entity.
+  changed file becomes a new version of its Synapse entity. Operators can also re-run a folder
+  without an upload ([Re-running a sync](#re-running-a-sync)).
 - Deleting from S3 does **not** delete from Synapse.
 
 ## Indexing code
@@ -234,7 +235,8 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 The pipeline never creates a project or storage location: each execution's `ResolveStorage`
 step looks up the bucket's project by name and its storage location on the bucket. If either
 is missing (the setup job failed, or has not run yet), the execution fails without retrying
-and emails `ALARM_EMAIL`; rerun the setup job, then re-upload the sidecar.
+and emails `ALARM_EMAIL`; rerun the setup job, then redrive the execution
+([Re-running a sync](#re-running-a-sync)).
 
 ### Watching a sync
 
@@ -247,3 +249,70 @@ aws --profile <profile> stepfunctions list-executions --state-machine-arn \
 Per-file results (`created` / `updated` / `unchanged` / `skipped`, or the error) are under
 `runs/` in the `ResultsBucketName` output bucket. Lambda logs carry one
 `{"event": "file_sync", ...}` line per file.
+
+### Re-running a sync
+
+Every re-run is safe: unchanged files are left alone. Pick the narrowest one that covers the
+case. All of them go through the same rule and state machine as a sidecar upload, so the same
+checks apply (configured buckets, `<folder>/sidecar.json`, the project from config) and a
+failure emails `ALARM_EMAIL` as usual.
+
+| Case | Use |
+|---|---|
+| An execution failed (Synapse was down, the Synapse setup was missing) and the cause is fixed | Redrive it |
+| A folder whose execution succeeded, is older than 14 days, or ran before a state machine change | A re-run request |
+| Many folders over a time window, or sidecars that never started an execution (the `SidecarRuleDLQ` alarm) | Replay the archive |
+
+```console
+export AWS_PROFILE=<profile>
+out() { aws cloudformation describe-stacks --stack-name rapid-dev-pipeline \
+  --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+```
+
+**Redrive** reruns only what did not succeed: the failed step, and in `SyncFiles` the failed,
+aborted and not-started files of the original listing (files added since are not picked up).
+It reuses the execution's input and state machine definition, with the current Lambda code.
+Possible for 14 days after the execution stopped. The failure email has the command:
+
+```console
+aws stepfunctions redrive-execution --execution-arn <executionArn>
+
+# Every failed, timed-out or aborted execution not redriven yet, e.g. after a Synapse outage.
+# One that failed for good (a bad sidecar) just fails and emails again; one past 14 days errors
+for status in FAILED TIMED_OUT ABORTED; do
+  aws stepfunctions list-executions --state-machine-arn "$(out SyncStateMachineArn)" \
+    --status-filter $status --redrive-filter NOT_REDRIVEN --query 'executions[].executionArn' --output text
+done | xargs -n1 aws stepfunctions redrive-execution --execution-arn
+```
+
+**A re-run request** is a `rapid.sync` `Sync Requested` event with the S3 event's `bucket` and
+`object.key`; the sidecar must still exist. It lists the folder again, so new files are
+included:
+
+```console
+aws events put-events --entries '[{"Source": "rapid.sync", "DetailType": "Sync Requested",
+  "Detail": "{\"bucket\": {\"name\": \"<bucket>\"}, \"object\": {\"key\": \"<folder>/sidecar.json\"}}"}]'
+```
+
+`FailedEntryCount` must be 0. Anyone in the account allowed `events:PutEvents` on the default
+bus can send one; it can only re-run a folder of a configured bucket into its own project.
+
+**Replay** resends the archived sidecar events and re-run requests of a time window
+(`SidecarArchive`, kept `SYNC.archive_retention_days`) to the sidecar rule only, one
+execution per event, including folders that succeeded. Events can take a few minutes to reach
+the archive (AWS recommends replaying no sooner than 10 minutes after), so end the window at
+least 10 minutes ago:
+
+```console
+aws events start-replay --replay-name rapid-dev-$(date +%Y%m%d%H%M%S) \
+  --event-source-arn "$(out SidecarArchiveArn)" \
+  --destination "Arn=$(out SidecarEventBusArn),FilterArns=$(out SidecarRuleArn)" \
+  --event-start-time 2026-11-16T08:00:00Z --event-end-time 2026-11-16T14:00:00Z
+aws events describe-replay --replay-name <replay-name>   # State: COMPLETED
+```
+
+After a DLQ alarm, replay the window of the messages in `SidecarRuleDLQ`, then purge it.
+
+A re-run while the folder's execution is still running is safe (a conflicting write fails the
+file, and its retry finds it done), but duplicates the work; check `list-executions
+--status-filter RUNNING` first.

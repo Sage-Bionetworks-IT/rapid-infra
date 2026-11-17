@@ -3,6 +3,7 @@ First step of a sync execution: turn a sidecar's S3 "Object Created" event into 
 sync and its Synapse project.
 
 Input (the EventBridge event's detail):  {"bucket": {"name": ...}, "object": {"key": ...}, ...}
+    from S3, or from a "Sync Requested" re-run request, which carries only those two fields
 Output: {"bucket", "prefix", "sidecar_key", "project_name"}
 
 The project comes from config (BUCKET_PROJECTS: bucket → project name), never from the
