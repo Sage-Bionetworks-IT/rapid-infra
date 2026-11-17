@@ -94,7 +94,7 @@ class SyncPipelineStack(cdk.Stack):
             timeout=cdk.Duration.seconds(30),
             memory_size=256,
             log_group=logs.LogGroup(
-                self, "PrepareFunctionLogs", retention=logs.RetentionDays.THREE_MONTHS
+                self, "PrepareFunctionLogs", retention=logs.RetentionDays.ONE_YEAR
             ),
         )
         self.prepare_fn.add_to_role_policy(
@@ -138,7 +138,7 @@ class SyncPipelineStack(cdk.Stack):
             timeout=cdk.Duration.minutes(15),
             memory_size=1024,
             log_group=logs.LogGroup(
-                self, "SyncFunctionLogs", retention=logs.RetentionDays.THREE_MONTHS
+                self, "SyncFunctionLogs", retention=logs.RetentionDays.ONE_YEAR
             ),
         )
         self.pat_secret.grant_read(self.sync_fn)
@@ -158,7 +158,7 @@ class SyncPipelineStack(cdk.Stack):
             timeout=cdk.Duration.minutes(2),
             memory_size=512,
             log_group=logs.LogGroup(
-                self, "ResolveStorageFunctionLogs", retention=logs.RetentionDays.THREE_MONTHS
+                self, "ResolveStorageFunctionLogs", retention=logs.RetentionDays.ONE_YEAR
             ),
         )
         self.pat_secret.grant_read(self.storage_fn)
@@ -254,7 +254,7 @@ class SyncPipelineStack(cdk.Stack):
             timeout=cdk.Duration.hours(24),
             logs=sfn.LogOptions(
                 destination=logs.LogGroup(
-                    self, "SyncStateMachineLogs", retention=logs.RetentionDays.THREE_MONTHS
+                    self, "SyncStateMachineLogs", retention=logs.RetentionDays.ONE_YEAR
                 ),
                 level=sfn.LogLevel.ERROR,
             ),
