@@ -100,7 +100,7 @@ class SyncPipelineStack(cdk.Stack):
         self.prepare_fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject"],
-                resources=[f"{arn}/*{sidecar_filename}" for arn in bucket_arns],
+                resources=[f"{arn}/*/{sidecar_filename}" for arn in bucket_arns],
             )
         )
 
