@@ -56,7 +56,9 @@ def resolve_storage_location(syn: Synapse, project_id: str, bucket: str) -> int:
     for location_id in (setting.locations if setting else None) or []:
         try:
             location = StorageLocation(storage_location_id=location_id).get(synapse_client=syn)
-        except SynapseHTTPError:
+        except SynapseHTTPError as e:
+            if _status(e) != 403:
+                raise
             continue  # created by someone else, so not usable by the service account
         if location.storage_type is StorageLocationType.EXTERNAL_S3 and location.bucket == bucket:
             return location.storage_location_id
@@ -177,10 +179,10 @@ def _create_folder(syn: Synapse, name: str, parent_id: str) -> str:
     except SynapseHTTPError as e:
         if _status(e) != 409:
             raise
-    folder_id = find_entity_id(name, parent_id, synapse_client=syn)
-    if folder_id is None:  # 409 for another reason; surface it, the item's retry starts over
-        raise IndexingError(f"Folder '{name}' in {parent_id} conflicts but cannot be found")
-    return folder_id
+        folder_id = find_entity_id(name, parent_id, synapse_client=syn)
+        if folder_id is None:
+            raise
+        return folder_id
 
 
 def object_md5(s3, bucket: str, key: str, head: dict) -> str:
