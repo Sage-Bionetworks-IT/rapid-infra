@@ -15,7 +15,7 @@ SYNAPSE:
   # The Synapse user the sync will log in as. It is added to every bucket's owner.txt, since
   # it must create the storage locations, and each bucket stack outputs it for
   # tools/setup_synapse_projects.py, which must run as this user (SYNAPSE_AUTH_TOKEN secret).
-  service_account_id: "3324230"  # thomas.yu TODO: Change to service account's Synapse user ID
+  service_account_id: ""
 
 # Synapse-connected buckets. One stack per entry; see config/aws/dev.yaml for the fields. Each
 # one's Synapse project is in config/synapse/{env}.yaml.
