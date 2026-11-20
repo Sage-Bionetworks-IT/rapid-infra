@@ -125,11 +125,12 @@ def syn(monkeypatch):
     return world
 
 
-PROJECT = {"name": "RAPID A", "bucket": "rapid-test-a"}
+# As in the template
+PROJECT = {"name": "RAPID A", "bucket": "$ref.BucketName.rapid-test-a"}
 # The bucket stacks' outputs
 BUCKET = {"BucketName": "rapid-test-a", "SynapseServiceAccountId": SERVICE_ACCOUNT}
 BUCKET_B = {**BUCKET, "BucketName": "rapid-test-b"}
-PROJECT_B = {"name": "RAPID B", "bucket": "rapid-test-b"}
+PROJECT_B = {"name": "RAPID B", "bucket": "$ref.BucketName.rapid-test-b"}
 
 
 def _files(tmp_path, projects, outputs):
@@ -246,7 +247,7 @@ def test_must_run_as_the_bucket_stacks_service_account(syn):
 )
 def test_bucket_outputs_need_exactly_one_bucket_stack(outputs):
     with pytest.raises(setup.SetupError, match="one deployed stack for bucket 'rapid-test-a'"):
-        setup.bucket_outputs(outputs, PROJECT)
+        setup.bucket_outputs(outputs, "rapid-test-a")
 
 
 def test_bucket_outputs_ignore_other_stacks():
@@ -255,7 +256,34 @@ def test_bucket_outputs_ignore_other_stacks():
         "rapid-dev-bucket-rapid-test-b": BUCKET_B,
         "rapid-dev-pipeline": {},  # no BucketName
     }
-    assert setup.bucket_outputs(outputs, PROJECT) == BUCKET
+    assert setup.bucket_outputs(outputs, "rapid-test-a") == BUCKET
+
+
+OUTPUTS = {"rapid-dev-bucket-rapid-test-a": BUCKET, "rapid-dev-bucket-rapid-test-b": BUCKET_B}
+
+
+def test_resolve_refs_anywhere():
+    value = {
+        **PROJECT,
+        "acl": [{"principal_id": 1, "permission": "view"}],
+        "notes": ["$ref.SynapseServiceAccountId.rapid-test-b", "plain"],
+    }
+    assert setup.resolve_refs(value, OUTPUTS) == {
+        "name": "RAPID A",
+        "bucket": "rapid-test-a",
+        "acl": [{"principal_id": 1, "permission": "view"}],
+        "notes": [SERVICE_ACCOUNT, "plain"],
+    }
+
+
+def test_resolve_refs_unknown_output():
+    with pytest.raises(setup.SetupError, match="no output 'BucketArn'"):
+        setup.resolve_refs("$ref.BucketArn.rapid-test-a", OUTPUTS)
+
+
+def test_resolve_refs_undeployed_bucket():
+    with pytest.raises(setup.SetupError, match="one deployed stack for bucket 'rapid-test-c'"):
+        setup.resolve_refs("$ref.BucketName.rapid-test-c", OUTPUTS)
 
 
 def test_main_sets_up_every_project_and_writes_the_job_summary(syn, monkeypatch, tmp_path):
@@ -270,6 +298,7 @@ def test_main_sets_up_every_project_and_writes_the_job_summary(syn, monkeypatch,
     assert setup.main(args) == 0
 
     assert set(syn.projects) == {"RAPID A", "RAPID B"}
+    assert set(syn.locations) == {"rapid-test-a", "rapid-test-b"}
     assert "`rapid-test-a`" in summary.read_text()
     assert "`rapid-test-b`" in summary.read_text()
 

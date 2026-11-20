@@ -1,11 +1,11 @@
 # Synapse resources of the dev environment, set up after every deploy by
-# tools/setup_synapse_projects.py. Each project's bucket is a BUCKETS bucket_name in
-# config/aws/dev.yaml.
+# tools/setup_synapse_projects.py. $ref.<Output>.<bucket_name> is a CloudFormation output of the
+# stack of that BUCKETS bucket_name in config/aws/dev.yaml, read from the deploy's CDK outputs.
 projects:
   # The provider's project, with the bucket as its only upload destination. Project names are
   # global in Synapse; renaming one here makes a new project, so rename it in Synapse first
   - name: RAPID dev provider 1  # TODO
-    bucket: rapid-dev-provider-example
+    bucket: $ref.BucketName.rapid-dev-provider-example
     # The project's sharing settings: Synapse teams or users, each with a permission level of
     # view, download, edit, edit_delete or admin. The setup makes Synapse match this list:
     # anyone not in it (shared by hand, public access) is removed, except the service account.

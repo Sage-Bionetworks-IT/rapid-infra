@@ -1,8 +1,10 @@
 """
 Set up the Synapse projects of a Synapse template (config/synapse/{env}.yaml) on the buckets the
 CDK app deployed. CI runs this after every deploy (aws-deploy.yaml), with the deploy's outputs:
-each project's bucket is a BUCKETS bucket_name, and the stack whose BucketName output it is
-gives the rest (the service account), as a Terraform resource would take another's output.
+each $ref.<Output>.<bucket_name> in the template is that output of the stack of the bucket with
+that BUCKETS bucket_name (the stack whose BucketName output it is), as a Terraform resource would
+take another's output. A project's bucket, $ref.BucketName.<bucket_name>, also names the stack
+that gives the service account.
 
 Never create a provider's project by hand: until its upload destination is set, a new project
 stores uploads in Synapse's default S3 bucket, where RAPID data must not go. For each project,
@@ -44,7 +46,7 @@ from synapseclient.models import (  # noqa: E402
 )
 from synapseclient.operations import find_entity_id  # noqa: E402
 
-from src.synapse_template import PERMISSIONS, load_template  # noqa: E402
+from src.synapse_template import PERMISSIONS, load_template, parse_ref  # noqa: E402
 
 
 class SetupError(Exception):
@@ -77,7 +79,8 @@ def main(argv=None) -> int:
     results, failures = [], []
     for project in projects:
         try:
-            results.append(setup_project(syn, me, project, bucket_outputs(outputs, project)))
+            bucket = bucket_outputs(outputs, parse_ref(project["bucket"]).bucket)
+            results.append(setup_project(syn, me, resolve_refs(project, outputs), bucket))
         except (SetupError, SynapseHTTPError) as e:
             failures.append((project, e))
             print(f"✗ {project['name']}: {e}", file=sys.stderr)
@@ -86,15 +89,33 @@ def main(argv=None) -> int:
     return 1 if failures else 0
 
 
-def bucket_outputs(outputs: dict, project: dict) -> dict:
-    """The outputs of the stack that deployed the project's bucket (its BucketName output)."""
-    stacks = [name for name, out in outputs.items() if out.get("BucketName") == project["bucket"]]
+def bucket_outputs(outputs: dict, bucket: str) -> dict:
+    """The outputs of the stack that deployed the bucket (its BucketName output)."""
+    stacks = [name for name, out in outputs.items() if out.get("BucketName") == bucket]
     if len(stacks) != 1:
         raise SetupError(
-            f"Expected one deployed stack for bucket '{project['bucket']}' in the CDK outputs, "
-            f"found {stacks or 'none'}: is it a BUCKETS bucket_name, and was its stack deployed?"
+            f"Expected one deployed stack for bucket '{bucket}' in the CDK outputs, found "
+            f"{stacks or 'none'}: is it a BUCKETS bucket_name, and was its stack deployed?"
         )
     return outputs[stacks[0]]
+
+
+def resolve_refs(value, outputs: dict):
+    """The value with every $ref.<Output>.<bucket_name> in it replaced by that stack output."""
+    if isinstance(value, dict):
+        return {key: resolve_refs(item, outputs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_refs(item, outputs) for item in value]
+    ref = parse_ref(value)
+    if ref is None:
+        return value
+    stack = bucket_outputs(outputs, ref.bucket)
+    if ref.output not in stack:
+        raise SetupError(
+            f"{value}: the stack of bucket '{ref.bucket}' has no output '{ref.output}' "
+            f"(it has {', '.join(sorted(stack))})"
+        )
+    return stack[ref.output]
 
 
 def setup_project(syn, me: str, project: dict, bucket: dict) -> dict:

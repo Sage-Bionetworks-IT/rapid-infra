@@ -40,7 +40,8 @@ config/aws/dev.yaml           BUCKETS: [{bucket_name: rapid-dev-provider-example
   → cdk deploy --all --outputs-file cdk-outputs.json
       {"rapid-dev-bucket-rapid-dev-provider-example":
         {"BucketName": "rapid-dev-provider-example", "SynapseServiceAccountId": "..."}}
-config/synapse/dev.yaml       projects: [{name: RAPID dev provider 1, bucket: rapid-dev-provider-example}]
+config/synapse/dev.yaml       projects: [{name: RAPID dev provider 1,
+                                            bucket: $ref.BucketName.rapid-dev-provider-example}]
   → tools/setup_synapse_projects.py --template config/synapse/dev.yaml --cdk-outputs cdk-outputs.json
 ```
 
@@ -76,7 +77,11 @@ Config is split by the system it configures:
   file wins, nested mappings merge key by key so an env file only lists the keys it changes, and
   lists are replaced. Synth validates the result, and fails on bad IDs or duplicate bucket names.
 - `config/synapse/{env}.yaml` (`tools/setup_synapse_projects.py`): one project per bucket,
-  naming its `BUCKETS` `bucket_name`. A unit test checks every project's bucket is in the AWS config.
+  referring to its bucket's stack. `$ref.<Output>.<bucket_name>` is a CloudFormation output
+  (`BucketName`, `BucketArn`, `SynapseServiceAccountId`) of the stack of that `BUCKETS`
+  `bucket_name`, resolved from the deploy's outputs. A project's `bucket` must be
+  `$ref.BucketName.<bucket_name>`. A unit test checks every reference names a bucket in the AWS
+  config.
 
 ```yaml
 # config/aws/dev.yaml
@@ -91,7 +96,7 @@ BUCKETS:
 # config/synapse/dev.yaml
 projects:
   - name: RAPID dev provider 1       # Synapse project names are global
-    bucket: rapid-dev-provider-example  # the bucket_name above
+    bucket: $ref.BucketName.rapid-dev-provider-example  # the BucketName output of its stack
     acl:                             # optional: the project's sharing settings, exactly
       - principal_id: 3629180        # a Synapse team or user ID
         permission: edit             # view, download, edit, edit_delete or admin

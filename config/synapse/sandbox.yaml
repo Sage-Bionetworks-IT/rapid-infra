@@ -1,7 +1,7 @@
 # Synapse resources of the sandbox (see config/aws/sandbox.yaml for running it)
 projects:
   - name: RAPID sandbox provider
-    bucket: rapid-dev-example-data
+    bucket: $ref.BucketName.rapid-dev-example-data
     acl:
       - principal_id: 3629180
         permission: edit
