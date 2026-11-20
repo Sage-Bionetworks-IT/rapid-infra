@@ -30,13 +30,14 @@ storage location's creator may create file handles in it, which is what the sync
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-import synapseclient  # noqa: E402
+from synapseclient import Synapse  # noqa: E402
 from synapseclient.core.exceptions import SynapseHTTPError  # noqa: E402
 from synapseclient.models import (  # noqa: E402
     Project,
@@ -47,6 +48,8 @@ from synapseclient.models import (  # noqa: E402
 from synapseclient.operations import find_entity_id  # noqa: E402
 
 from src.synapse_template import PERMISSIONS, load_template, parse_ref  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 class SetupError(Exception):
@@ -72,18 +75,19 @@ def main(argv=None) -> int:
     if not token:
         sys.exit("Set SYNAPSE_AUTH_TOKEN to the service account's Synapse PAT")
 
-    syn = synapseclient.Synapse(skip_checks=True, silent=True)
+    syn = Synapse(skip_checks=True, silent=True)
     syn.login(authToken=token, silent=True)
-    me = str(UserProfile().get(synapse_client=syn).id)  # no id or username: the current user
+    # No id or username: the logged-in user
+    current_user = str(UserProfile().get(synapse_client=syn).id)
 
     results, failures = [], []
     for project in projects:
         try:
             bucket = bucket_outputs(outputs, parse_ref(project["bucket"]).bucket)
-            results.append(setup_project(syn, me, resolve_refs(project, outputs), bucket))
+            results.append(setup_project(syn, current_user, resolve_refs(project, outputs), bucket))
         except (SetupError, SynapseHTTPError) as e:
             failures.append((project, e))
-            print(f"✗ {project['name']}: {e}", file=sys.stderr)
+            logger.error("✗ %s: %s", project["name"], e)
 
     _report(args.template, results, failures)
     return 1 if failures else 0
@@ -118,11 +122,11 @@ def resolve_refs(value, outputs: dict):
     return stack[ref.output]
 
 
-def setup_project(syn, me: str, project: dict, bucket: dict) -> dict:
+def setup_project(syn, current_user: str, project: dict, bucket: dict) -> dict:
     name, bucket_name = project["name"], bucket["BucketName"]
-    if me != str(bucket["SynapseServiceAccountId"]):
+    if current_user != str(bucket["SynapseServiceAccountId"]):
         raise SetupError(
-            f"Logged in as Synapse user {me}, not the service account "
+            f"Logged in as Synapse user {current_user}, not the service account "
             f"{bucket['SynapseServiceAccountId']} in s3://{bucket_name}'s owner.txt: the sync "
             "could not use the storage location"
         )
@@ -130,7 +134,7 @@ def setup_project(syn, me: str, project: dict, bucket: dict) -> dict:
         project_id = ensure_project(syn, name)
         # Straight after creation: nothing can be uploaded to the project before this
         location_id = ensure_only_location(syn, Project(id=project_id), bucket_name)
-        acl_changes = ensure_acl(syn, Project(id=project_id), project.get("acl", []), me)
+        acl_changes = ensure_acl(syn, Project(id=project_id), project.get("acl", []), current_user)
         apply_project_template(syn, project_id, project)
     except SynapseHTTPError as e:
         if _status(e) in (400, 403):
@@ -140,9 +144,11 @@ def setup_project(syn, me: str, project: dict, bucket: dict) -> dict:
                 "the project"
             ) from e
         raise
-    print(f"✓ {name}: {project_id} on s3://{bucket_name}, upload location {location_id}")
+    logger.info(
+        "✓ %s: %s on s3://%s, upload location %s", name, project_id, bucket_name, location_id
+    )
     for change in acl_changes:
-        print(f"  sharing {change}")
+        logger.info("  sharing %s", change)
     return {
         "name": name,
         "project_id": project_id,
@@ -186,22 +192,22 @@ def ensure_only_location(syn, container, bucket: str) -> int:
     return location_id
 
 
-def ensure_acl(syn, project, acl: list, me: str) -> list:
+def ensure_acl(syn, project, acl: list, current_user: str) -> list:
     """
     Make the project's sharing settings exactly the acl, plus the service account (whose admin
     access is what lets this script manage the project, so it is never changed). Returns the
     changes made, for the log.
     """
     wanted = {str(e["principal_id"]): PERMISSIONS[e["permission"]] for e in acl}
-    if me in wanted:
+    if current_user in wanted:
         raise SetupError(
-            f"The acl lists the service account {me}: it administers the project already, and "
-            "changing its permissions would lock this setup out"
+            f"The acl lists the service account {current_user}: it administers the project "
+            "already, and changing its permissions would lock this setup out"
         )
     current = {
         str(e.principal_id): e.permissions
         for e in project.list_acl(synapse_client=syn).entity_acl
-        if str(e.principal_id) != me
+        if str(e.principal_id) != current_user
     }
     changes = [
         (principal, access)
@@ -234,6 +240,7 @@ def apply_project_template(syn, project_id: str, project: dict) -> None:
     - a versioned folder structure (e.g. ingest / staging / release) from a data model
     - JSON schema bindings, file views and curation tasks
     """
+    pass
 
 
 def _status(error: SynapseHTTPError):
@@ -260,4 +267,5 @@ def _report(template: str, results: list, failures: list) -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     sys.exit(main())

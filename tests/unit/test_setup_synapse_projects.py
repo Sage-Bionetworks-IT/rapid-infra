@@ -120,7 +120,7 @@ def syn(monkeypatch):
     monkeypatch.setattr(setup, "Project", FakeProject)
     monkeypatch.setattr(setup, "StorageLocation", FakeStorageLocation)
     monkeypatch.setattr(setup, "UserProfile", FakeUserProfile)
-    monkeypatch.setattr(setup.synapseclient, "Synapse", lambda **kwargs: world)
+    monkeypatch.setattr(setup, "Synapse", lambda **kwargs: world)
     monkeypatch.setenv("SYNAPSE_AUTH_TOKEN", "pat")
     return world
 
