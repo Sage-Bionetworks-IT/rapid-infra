@@ -6,7 +6,7 @@ BUCKETS bucket_name; tools/setup_synapse_projects.py resolves them from the CDK 
 a Terraform resource takes another's output.
 
     projects:
-      - name: RAPID dev provider 1   # the Synapse project (names are global in Synapse)
+      - name: RAPID dev provider a   # the Synapse project (names are global in Synapse)
         bucket: $ref.BucketName.rapid-dev-provider-a  # a BUCKETS[].bucket_name's stack
         acl:                         # optional: the project's sharing settings, exactly
           - principal_id: 3629180    # a Synapse team or user ID

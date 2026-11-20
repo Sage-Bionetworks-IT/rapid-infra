@@ -40,7 +40,7 @@ config/aws/dev.yaml           BUCKETS: [{bucket_name: rapid-dev-provider-example
   → cdk deploy --all --outputs-file cdk-outputs.json
       {"rapid-dev-bucket-rapid-dev-provider-example":
         {"BucketName": "rapid-dev-provider-example", "SynapseServiceAccountId": "..."}}
-config/synapse/dev.yaml       projects: [{name: RAPID dev provider 1,
+config/synapse/dev.yaml       projects: [{name: RAPID dev provider example,
                                             bucket: $ref.BucketName.rapid-dev-provider-example}]
   → tools/setup_synapse_projects.py --template config/synapse/dev.yaml --cdk-outputs cdk-outputs.json
 ```
@@ -95,7 +95,7 @@ BUCKETS:
 
 # config/synapse/dev.yaml
 projects:
-  - name: RAPID dev provider 1       # Synapse project names are global
+  - name: RAPID dev provider example # Synapse project names are global
     bucket: $ref.BucketName.rapid-dev-provider-example  # the BucketName output of its stack
     acl:                             # optional: the project's sharing settings, exactly
       - principal_id: 3629180        # a Synapse team or user ID

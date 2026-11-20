@@ -4,7 +4,7 @@
 projects:
   # The provider's project, with the bucket as its only upload destination. Project names are
   # global in Synapse; renaming one here makes a new project, so rename it in Synapse first
-  - name: RAPID dev provider 1  # TODO
+  - name: RAPID dev provider example
     bucket: $ref.BucketName.rapid-dev-provider-example
     # The project's sharing settings: Synapse teams or users, each with a permission level of
     # view, download, edit, edit_delete or admin. The setup makes Synapse match this list:
