@@ -23,6 +23,12 @@ _ARCH = lambda_.Architecture.ARM_64
 
 # Lambda service errors are retried by LambdaInvoke's default retrier (retry_on_service_exceptions)
 
+# A re-run request: a custom event shaped like the S3 event's detail, sent with
+# `aws events put-events` (README: "Re-running a sync"). PutEvents rejects "aws." sources, so
+# only S3 itself can send the aws.s3 events.
+SYNC_REQUEST_SOURCE = "rapid.sync"
+SYNC_REQUEST_DETAIL_TYPE = "Sync Requested"
+
 
 class SyncPipelineStack(cdk.Stack):
     """
@@ -45,6 +51,15 @@ class SyncPipelineStack(cdk.Stack):
     Re-uploading a sidecar re-runs the folder; unchanged files (same MD5) are left alone.
     Nested folders are included (ListObjectsV2 is recursive). Deleting from S3 does not delete
     from Synapse.
+
+    Retriggering without a new upload (README: "Re-running a sync"), all through the same rule
+    and state machine:
+        redrive         a failed execution reruns only its failed and not-started steps and
+                        files (Step Functions redrive, 14 days)
+        Sync Requested  a rapid.sync event with the S3 event's detail shape re-runs one folder
+        replay          the rule's events are archived; replaying a time window to the rule
+                        re-runs every folder in it, including events that never started an
+                        execution (the rule's DLQ)
     """
 
     def __init__(
@@ -271,23 +286,33 @@ class SyncPipelineStack(cdk.Stack):
         )
 
         # -------------------
-        # EventBridge: sidecar created → start an execution
+        # EventBridge: sidecar created, or a re-run requested → start an execution. The
+        # state machine role can already redrive its Map Runs: CDK grants
+        # states:RedriveExecution on their child executions for every Distributed Map.
         # -------------------
+        # S3's sidecar events and the operators' re-run requests, which carry the same detail
+        # ({"bucket": {"name"}, "object": {"key"}}), so both go through the same checks. The
+        # cross matches (aws.s3 "Sync Requested", rapid.sync "Object Created") are harmless:
+        # S3 sends neither, and a rapid.sync one is just a re-run request.
+        sidecar_pattern = events.EventPattern(
+            source=["aws.s3", SYNC_REQUEST_SOURCE],
+            detail_type=["Object Created", SYNC_REQUEST_DETAIL_TYPE],
+            detail={
+                "bucket": {"name": bucket_names},
+                "object": {"key": [{"suffix": f"/{sidecar_filename}"}]},
+            },
+        )
         self.rule_dlq = sqs.Queue(
             self, "SidecarRuleDLQ", retention_period=cdk.Duration.days(14), enforce_ssl=True
         )
-        events.Rule(
+        self.sidecar_rule = events.Rule(
             self,
             "SidecarCreatedRule",
-            description=f"S3 → Synapse sync: a {sidecar_filename} landed in a data folder",
-            event_pattern=events.EventPattern(
-                source=["aws.s3"],
-                detail_type=["Object Created"],
-                detail={
-                    "bucket": {"name": bucket_names},
-                    "object": {"key": [{"suffix": f"/{sidecar_filename}"}]},
-                },
+            description=(
+                f"S3 → Synapse sync: a {sidecar_filename} landed in a data folder, or a re-run "
+                "was requested"
             ),
+            event_pattern=sidecar_pattern,
             targets=[
                 targets.SfnStateMachine(
                     self.state_machine,
@@ -296,6 +321,18 @@ class SyncPipelineStack(cdk.Stack):
                     retry_attempts=3,
                 )
             ],
+        )
+        # The rule's events, kept for replay to it (start-replay with the rule as the filter):
+        # re-runs every folder of a time window, such as a Synapse outage, and the events
+        # EventBridge failed to deliver (the DLQ). Replayed events are not archived again.
+        self.default_bus = events.EventBus.from_event_bus_name(self, "DefaultBus", "default")
+        self.sidecar_archive = events.Archive(
+            self,
+            "SidecarArchive",
+            source_event_bus=self.default_bus,
+            event_pattern=sidecar_pattern,
+            retention=cdk.Duration.days(sync_config["archive_retention_days"]),
+            description="S3 → Synapse sync: sidecar events and re-run requests, for replay",
         )
 
         # -------------------
@@ -326,8 +363,14 @@ class SyncPipelineStack(cdk.Stack):
                         f"Input: {events.EventField.from_path('$.detail.input')}\n"
                         f"Error: {events.EventField.from_path('$.detail.error')}\n"
                         f"Cause: {events.EventField.from_path('$.detail.cause')}\n"
+                        f"Redrives so far: {events.EventField.from_path('$.detail.redriveCount')}\n"
                         f"https://{self.region}.console.aws.amazon.com/states/home?region={self.region}"
-                        f"#/v2/executions/details/{execution_arn}"
+                        f"#/v2/executions/details/{execution_arn}\n"
+                        "Once the cause is fixed (say, Synapse is back), rerun only what failed,"
+                        " within 14 days:\n"
+                        f"aws stepfunctions redrive-execution --execution-arn {execution_arn}\n"
+                        "A bad sidecar: upload a fixed one. Other ways to re-run: README,"
+                        " Re-running a sync"
                     ),
                 )
             ],
@@ -348,3 +391,7 @@ class SyncPipelineStack(cdk.Stack):
         cdk.CfnOutput(self, "SyncStateMachineArn", value=self.state_machine.state_machine_arn)
         cdk.CfnOutput(self, "SynapsePatSecretArn", value=self.pat_secret.secret_arn)
         cdk.CfnOutput(self, "ResultsBucketName", value=self.results_bucket.bucket_name)
+        # aws events start-replay: the archive, its bus and the rule to replay to
+        cdk.CfnOutput(self, "SidecarArchiveArn", value=self.sidecar_archive.archive_arn)
+        cdk.CfnOutput(self, "SidecarEventBusArn", value=self.default_bus.event_bus_arn)
+        cdk.CfnOutput(self, "SidecarRuleArn", value=self.sidecar_rule.rule_arn)

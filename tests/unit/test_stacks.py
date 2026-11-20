@@ -5,7 +5,11 @@ from aws_cdk.assertions import Match, Template
 
 from src.synapse_template import load_template, project_names
 from src.synapse_bucket_stack import SynapseBucketStack
-from src.sync_pipeline_stack import SyncPipelineStack
+from src.sync_pipeline_stack import (
+    SYNC_REQUEST_DETAIL_TYPE,
+    SYNC_REQUEST_SOURCE,
+    SyncPipelineStack,
+)
 from src.utils import load_context_config
 
 BUCKET = {
@@ -19,6 +23,7 @@ SYNC = {
     "max_concurrency": 7,
     "tolerated_failure_percentage": 0,
     "results_retention_days": 30,
+    "archive_retention_days": 45,
 }
 
 
@@ -102,23 +107,54 @@ def test_outputs_feed_the_synapse_setup(bucket_template):
     assert outputs["SynapseServiceAccountId"]["Value"] == "1234567"
 
 
-def test_sidecar_rule_matches_configured_buckets(pipeline_template):
+SIDECAR_PATTERN = {
+    # S3's sidecar events, and the re-run requests operators send with put-events
+    "source": ["aws.s3", "rapid.sync"],
+    "detail-type": ["Object Created", "Sync Requested"],
+    "detail": {
+        "bucket": {"name": ["rapid-test-a", "rapid-test-b"]},
+        "object": {"key": [{"suffix": "/sidecar.json"}]},
+    },
+}
+
+
+def test_sidecar_rule_matches_configured_buckets_and_rerun_requests(pipeline_template):
+    # The README's put-events command uses these values
+    assert (SYNC_REQUEST_SOURCE, SYNC_REQUEST_DETAIL_TYPE) == ("rapid.sync", "Sync Requested")
     pipeline_template.has_resource_properties(
         "AWS::Events::Rule",
         {
-            "EventPattern": {
-                "source": ["aws.s3"],
-                "detail-type": ["Object Created"],
-                "detail": {
-                    "bucket": {"name": ["rapid-test-a", "rapid-test-b"]},
-                    "object": {"key": [{"suffix": "/sidecar.json"}]},
-                },
-            },
+            "EventPattern": SIDECAR_PATTERN,
             "Targets": [
                 Match.object_like({"InputPath": "$.detail", "DeadLetterConfig": Match.any_value()})
             ],
         },
     )
+
+
+def test_sidecar_events_are_archived_for_replay(pipeline_template):
+    (archive,) = pipeline_template.find_resources("AWS::Events::Archive").values()
+    props = archive["Properties"]
+    # Exactly what the rule matches, from the default bus, where S3 sends its events
+    assert props["EventPattern"] == SIDECAR_PATTERN
+    assert props["RetentionDays"] == 45
+    assert json.dumps(props["SourceArn"]).endswith(':event-bus/default"]]}')
+    # start-replay needs the archive, its bus and the rule (FilterArns)
+    outputs = pipeline_template.find_outputs("*")
+    assert {"SidecarArchiveArn", "SidecarEventBusArn", "SidecarRuleArn"} <= set(outputs)
+
+
+def test_state_machine_can_redrive_its_map_runs(pipeline_template):
+    # Redriving a failed execution redrives the Distributed Map's failed child executions,
+    # which the state machine's own role does: CDK grants it on {state machine}/{label}:*
+    statements = [
+        s
+        for p in pipeline_template.find_resources("AWS::IAM::Policy").values()
+        for s in p["Properties"]["PolicyDocument"]["Statement"]
+    ]
+    (redrive,) = [s for s in statements if s["Action"] == "states:RedriveExecution"]
+    assert redrive["Effect"] == "Allow"
+    assert json.dumps(redrive["Resource"]).endswith('"/*:*"]]}')
 
 
 def test_only_the_synapse_lambdas_read_the_pat(pipeline_template):
@@ -206,10 +242,15 @@ def test_failure_email(pipeline_template):
     pipeline_template.has_resource_properties(
         "AWS::SNS::Subscription", {"Protocol": "email", "Endpoint": "alerts@example.org"}
     )
-    pipeline_template.has_resource_properties(
+    (rule,) = pipeline_template.find_resources(
         "AWS::Events::Rule",
-        {"EventPattern": Match.object_like({"source": ["aws.states"]})},
-    )
+        {"Properties": {"EventPattern": Match.object_like({"source": ["aws.states"]})}},
+    ).values()
+    (target,) = rule["Properties"]["Targets"]
+    message = json.dumps(target["InputTransformer"]["InputTemplate"])
+    # The email says how to rerun what failed
+    assert "aws stepfunctions redrive-execution --execution-arn <detail-executionArn>" in message
+    assert "<detail-redriveCount>" in message
 
 
 @pytest.mark.parametrize("env", ["dev", "prod", "sandbox"])
