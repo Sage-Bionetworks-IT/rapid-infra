@@ -10,8 +10,8 @@ VALID = {
     "PROJECT_NAME": "rapid",
     "SYNAPSE": {"aws_account_id": "325565585839", "service_account_id": "1234567"},
     "BUCKETS": [
-        {"id": "a", "bucket_name": "rapid-test-a"},
-        {"id": "b", "bucket_name": "rapid-test-b"},
+        {"bucket_name": "rapid-test-a"},
+        {"bucket_name": "rapid-test-b"},
     ],
 }
 
@@ -138,9 +138,8 @@ def test_missing_project_name_rejected():
     "changes, message",
     [
         ({"BUCKETS__1__bucket_name": "rapid-test-a"}, "used by another bucket"),
-        ({"BUCKETS__1__id": "a"}, "used by another bucket"),
-        ({"BUCKETS__0__bucket_name": "Not_A_Bucket"}, "not a valid S3 bucket name"),
-        ({"BUCKETS__0__id": "Has Spaces"}, "must match"),
+        ({"BUCKETS__0__bucket_name": "Not_A_Bucket"}, "must match"),
+        ({"BUCKETS__0__bucket_name": "rapid.test.a"}, "must match"),  # dots break stack names
         ({"BUCKETS__0__synapse_owner_ids": ["jdoe"]}, "not a numeric Synapse ID"),
         ({"BUCKETS__0__s3_user_arns": "arn:aws:iam::1:root"}, "must be a list"),
         ({"SYNAPSE__service_account_id": "TODO"}, "service_account_id"),

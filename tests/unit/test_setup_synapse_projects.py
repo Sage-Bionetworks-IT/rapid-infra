@@ -99,9 +99,11 @@ def syn(monkeypatch):
     return world
 
 
-PROJECT = {"name": "RAPID A", "bucket": "a"}
-# The bucket stack's outputs: the deployed bucket name, which may differ from the config's
-BUCKET = {"BucketName": "rapid-test-a-deployed", "SynapseServiceAccountId": SERVICE_ACCOUNT}
+PROJECT = {"name": "RAPID A", "bucket": "rapid-test-a"}
+# The bucket stacks' outputs
+BUCKET = {"BucketName": "rapid-test-a", "SynapseServiceAccountId": SERVICE_ACCOUNT}
+BUCKET_B = {**BUCKET, "BucketName": "rapid-test-b"}
+PROJECT_B = {"name": "RAPID B", "bucket": "rapid-test-b"}
 
 
 def _files(tmp_path, projects, outputs):
@@ -115,11 +117,11 @@ def test_creates_the_project_on_the_deployed_bucket(syn):
     result = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
 
     project_id = syn.projects["RAPID A"]
-    location_id = syn.locations["rapid-test-a-deployed"]
+    location_id = syn.locations["rapid-test-a"]
     assert result == {
         "name": "RAPID A",
         "project_id": project_id,
-        "bucket": "rapid-test-a-deployed",
+        "bucket": "rapid-test-a",
         "storage_location_id": location_id,
     }
     assert syn.settings[project_id] == [location_id]
@@ -140,7 +142,7 @@ def test_existing_project_loses_every_other_upload_location(syn):
 
     setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
 
-    assert syn.settings[project_id] == [syn.locations["rapid-test-a-deployed"]]
+    assert syn.settings[project_id] == [syn.locations["rapid-test-a"]]
 
 
 def test_name_taken_by_an_invisible_project(syn):
@@ -160,17 +162,21 @@ def test_must_run_as_the_bucket_stacks_service_account(syn):
     "outputs",
     [
         {},  # not deployed
-        {"rapid-dev-bucket-b": BUCKET},  # another bucket
-        {"rapid-dev-bucket-a": BUCKET, "other-bucket-a": BUCKET},  # ambiguous
+        {"rapid-dev-bucket-rapid-test-b": BUCKET_B},  # another bucket
+        {"rapid-dev-bucket-rapid-test-a": BUCKET, "other": BUCKET},  # ambiguous
     ],
 )
 def test_bucket_outputs_need_exactly_one_bucket_stack(outputs):
-    with pytest.raises(setup.SetupError, match="one deployed stack for bucket 'a'"):
+    with pytest.raises(setup.SetupError, match="one deployed stack for bucket 'rapid-test-a'"):
         setup.bucket_outputs(outputs, PROJECT)
 
 
 def test_bucket_outputs_ignore_other_stacks():
-    outputs = {"rapid-dev-bucket-a": BUCKET, "rapid-dev-bucket-ab": {}, "rapid-dev-pipeline": {}}
+    outputs = {
+        "rapid-dev-bucket-rapid-test-a": BUCKET,
+        "rapid-dev-bucket-rapid-test-b": BUCKET_B,
+        "rapid-dev-pipeline": {},  # no BucketName
+    }
     assert setup.bucket_outputs(outputs, PROJECT) == BUCKET
 
 
@@ -179,17 +185,14 @@ def test_main_sets_up_every_project_and_writes_the_job_summary(syn, monkeypatch,
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     args = _files(
         tmp_path,
-        [PROJECT, {"name": "RAPID B", "bucket": "b"}],
-        {
-            "rapid-dev-bucket-a": BUCKET,
-            "rapid-dev-bucket-b": {**BUCKET, "BucketName": "rapid-test-b"},
-        },
+        [PROJECT, PROJECT_B],
+        {"rapid-dev-bucket-rapid-test-a": BUCKET, "rapid-dev-bucket-rapid-test-b": BUCKET_B},
     )
 
     assert setup.main(args) == 0
 
     assert set(syn.projects) == {"RAPID A", "RAPID B"}
-    assert "`rapid-test-a-deployed`" in summary.read_text()
+    assert "`rapid-test-a`" in summary.read_text()
     assert "`rapid-test-b`" in summary.read_text()
 
 
@@ -197,8 +200,8 @@ def test_main_continues_past_a_failing_project_and_fails(syn, tmp_path):
     # RAPID A's bucket stack was not deployed
     args = _files(
         tmp_path,
-        [PROJECT, {"name": "RAPID B", "bucket": "b"}],
-        {"rapid-dev-bucket-b": BUCKET},
+        [PROJECT, PROJECT_B],
+        {"rapid-dev-bucket-rapid-test-b": BUCKET_B},
     )
 
     assert setup.main(args) == 1
@@ -206,6 +209,6 @@ def test_main_continues_past_a_failing_project_and_fails(syn, tmp_path):
 
 
 def test_main_project_filter(syn, tmp_path):
-    args = _files(tmp_path, [PROJECT], {"rapid-dev-bucket-a": BUCKET})
+    args = _files(tmp_path, [PROJECT], {"rapid-dev-bucket-rapid-test-a": BUCKET})
     with pytest.raises(SystemExit, match="No project 'RAPID Z'"):
         setup.main(args + ["--project", "RAPID Z"])

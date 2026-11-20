@@ -8,9 +8,10 @@ import yaml
 # sandbox: a personal test account, deployed from a laptop (config/aws/sandbox.yaml); never by CI
 VALID_ENVS = {"dev", "prod", "sandbox"}
 
-_BUCKET_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
-# https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html (the common subset)
-_BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+# https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html (the common subset),
+# without dots: the bucket name is in its stack's name, where dots are not allowed (and AWS
+# advises against them, as they break virtual-hosted-style HTTPS)
+_BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 _SYNAPSE_PRINCIPAL = re.compile(r"^\d+$")
 
 _BUCKET_LIST_FIELDS = ("synapse_owner_ids", "s3_user_arns", "s3_admin_arns", "deny_delete_arns")
@@ -98,25 +99,23 @@ def validate_config(config: Dict[str, Any]) -> None:
     if account is not None and not re.fullmatch(r"\d{12}", str(account)):
         raise ValueError(f"AWS_ACCOUNT must be a 12-digit AWS account ID, got '{account}'")
 
-    seen = {"id": set(), "bucket_name": set()}
+    seen = set()
     for i, bucket in enumerate(config.get("BUCKETS") or []):
         where = f"BUCKETS[{i}]"
         _validate_bucket(where, bucket)
-        for field, values in seen.items():
-            if bucket[field] in values:
-                raise ValueError(f"{where}.{field} '{bucket[field]}' is used by another bucket")
-            values.add(bucket[field])
+        if bucket["bucket_name"] in seen:
+            raise ValueError(
+                f"{where}.bucket_name '{bucket['bucket_name']}' is used by another bucket"
+            )
+        seen.add(bucket["bucket_name"])
 
 
 def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
-    for field in ("id", "bucket_name"):
-        if not bucket.get(field):
-            raise ValueError(f"{where}.{field} is required")
-    if not _BUCKET_ID.match(bucket["id"]):
-        raise ValueError(f"{where}.id '{bucket['id']}' must match {_BUCKET_ID.pattern}")
+    if not bucket.get("bucket_name"):
+        raise ValueError(f"{where}.bucket_name is required")
     if not _BUCKET_NAME.match(bucket["bucket_name"]):
         raise ValueError(
-            f"{where}.bucket_name '{bucket['bucket_name']}' is not a valid S3 bucket name"
+            f"{where}.bucket_name '{bucket['bucket_name']}' must match {_BUCKET_NAME.pattern}"
         )
     for field in _BUCKET_LIST_FIELDS:
         if not isinstance(bucket.get(field, []), list):

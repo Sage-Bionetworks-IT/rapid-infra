@@ -2,7 +2,7 @@
 # config/aws/{env}.yaml: env wins, nested mappings merge key by key (an env file only lists the
 # keys it changes), lists are replaced. Synapse resources are in config/synapse/{env}.yaml.
 
-# Stack names are {PROJECT_NAME}-{env}-bucket-{id}
+# Stack names are {PROJECT_NAME}-{env}-bucket-{bucket_name}
 PROJECT_NAME: rapid
 
 TAGS:

@@ -1,8 +1,8 @@
 # Synapse resources of the dev environment, set up after every deploy by
-# tools/setup_synapse_projects.py. Each project's bucket is a BUCKETS id in config/aws/dev.yaml;
-# its deployed name comes from the CDK outputs.
+# tools/setup_synapse_projects.py. Each project's bucket is a BUCKETS bucket_name in
+# config/aws/dev.yaml.
 projects:
   # The provider's project, with the bucket as its only upload destination. Project names are
   # global in Synapse; renaming one here makes a new project, so rename it in Synapse first
   - name: RAPID dev provider 1  # TODO
-    bucket: example
+    bucket: rapid-dev-provider-example

@@ -7,7 +7,6 @@ from src.synapse_bucket_stack import SynapseBucketStack
 from src.utils import load_context_config
 
 BUCKET = {
-    "id": "a",
     "bucket_name": "rapid-test-a",
     "synapse_owner_ids": ["3333333"],
     "s3_user_arns": ["arn:aws:iam::111111111111:role/provider-a"],
@@ -85,7 +84,7 @@ def test_repo_configs_synthesize(app, env):
     for bucket in config["BUCKETS"]:
         SynapseBucketStack(
             app,
-            f"bucket-{bucket['id']}",
+            f"bucket-{bucket['bucket_name']}",
             bucket_config=bucket,
             synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
             synapse_service_account_id=config["SYNAPSE"]["service_account_id"],

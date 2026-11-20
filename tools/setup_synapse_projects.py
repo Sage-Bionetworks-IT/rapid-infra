@@ -1,8 +1,8 @@
 """
 Set up the Synapse projects of a Synapse template (config/synapse/{env}.yaml) on the buckets the
 CDK app deployed. CI runs this after every deploy (aws-deploy.yaml), with the deploy's outputs:
-each project's bucket is a BUCKETS id, and its deployed name comes from that bucket stack's
-outputs, as a Terraform resource would take another's output.
+each project's bucket is a BUCKETS bucket_name, and the stack whose BucketName output it is
+gives the rest (the service account), as a Terraform resource would take another's output.
 
 Never create a provider's project by hand: until its upload destination is set, a new project
 stores uploads in Synapse's default S3 bucket, where RAPID data must not go. For each project,
@@ -84,12 +84,12 @@ def main(argv=None) -> int:
 
 
 def bucket_outputs(outputs: dict, project: dict) -> dict:
-    """The outputs of the stack that deployed the project's bucket ({prefix}-bucket-{id})."""
-    stacks = [name for name in outputs if name.endswith(f"-bucket-{project['bucket']}")]
+    """The outputs of the stack that deployed the project's bucket (its BucketName output)."""
+    stacks = [name for name, out in outputs.items() if out.get("BucketName") == project["bucket"]]
     if len(stacks) != 1:
         raise SetupError(
             f"Expected one deployed stack for bucket '{project['bucket']}' in the CDK outputs, "
-            f"found {stacks or 'none'}: is it a BUCKETS id, and was its stack deployed?"
+            f"found {stacks or 'none'}: is it a BUCKETS bucket_name, and was its stack deployed?"
         )
     return outputs[stacks[0]]
 

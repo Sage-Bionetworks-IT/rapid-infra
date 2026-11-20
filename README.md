@@ -22,7 +22,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 
 | Stack | Purpose |
 |---|---|
-| `rapid-{env}-bucket-{id}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
+| `rapid-{env}-bucket-{bucket_name}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
 
 Adding a provider is a config change: a `BUCKETS` entry in `config/aws/{env}.yaml` and its
 project in `config/synapse/{env}.yaml`.
@@ -36,10 +36,11 @@ deploys the AWS resources; the Synapse resources are declared separately, in
 would take another's output:
 
 ```
-config/aws/dev.yaml           BUCKETS: [{id: example, bucket_name: ..., ...}]
+config/aws/dev.yaml           BUCKETS: [{bucket_name: rapid-dev-provider-example, ...}]
   → cdk deploy --all --outputs-file cdk-outputs.json
-      {"rapid-dev-bucket-example": {"BucketName": "...", "SynapseServiceAccountId": "..."}}
-config/synapse/dev.yaml       projects: [{name: RAPID dev provider 1, bucket: example}]
+      {"rapid-dev-bucket-rapid-dev-provider-example":
+        {"BucketName": "rapid-dev-provider-example", "SynapseServiceAccountId": "..."}}
+config/synapse/dev.yaml       projects: [{name: RAPID dev provider 1, bucket: rapid-dev-provider-example}]
   → tools/setup_synapse_projects.py --template config/synapse/dev.yaml --cdk-outputs cdk-outputs.json
 ```
 
@@ -70,13 +71,12 @@ Config is split by the system it configures:
   file wins, nested mappings merge key by key so an env file only lists the keys it changes, and
   lists are replaced. Synth validates the result, and fails on bad IDs or duplicate bucket names.
 - `config/synapse/{env}.yaml` (`tools/setup_synapse_projects.py`): one project per bucket,
-  naming its `BUCKETS` id. A unit test checks every project's bucket is in the AWS config.
+  naming its `BUCKETS` `bucket_name`. A unit test checks every project's bucket is in the AWS config.
 
 ```yaml
 # config/aws/dev.yaml
 BUCKETS:
-  - id: example                      # stack name suffix
-    bucket_name: rapid-dev-example-data
+  - bucket_name: rapid-dev-provider-example  # globally unique; also the stack name suffix
     synapse_owner_ids: []            # owner.txt; the service account is always added
     s3_user_arns: []                 # provider principals with read/write (cross-account OK)
     s3_admin_arns: []
@@ -86,7 +86,7 @@ BUCKETS:
 # config/synapse/dev.yaml
 projects:
   - name: RAPID dev provider 1       # Synapse project names are global
-    bucket: example                  # the BUCKETS id above
+    bucket: rapid-dev-provider-example  # the bucket_name above
 ```
 
 `owner.txt` (`synapse_owner_ids`) lists who may register a storage location on the bucket, the
