@@ -16,3 +16,5 @@ jobs:
       role-to-assume: "arn:aws:iam::565839248283:role/sagebase-github-oidc-sage-bionetworks-rapid-prod-infra"
       role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
       environment: prod
+    # Without it, the called workflow's jobs don't get their environment's secrets
+    secrets: inherit
