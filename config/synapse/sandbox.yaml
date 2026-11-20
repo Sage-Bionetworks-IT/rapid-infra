@@ -9,3 +9,7 @@ projects:
   # syn78555380
   - name: RAPID KMS Test
     bucket: $ref.BucketName.rapid-sandbox-kmstest-data
+  # Client-side encryption trial (config/aws/sandbox.yaml: rapid-sandbox-csetest-data).
+  # Uncomment with the bucket
+  # - name: RAPID CSE Test
+  #   bucket: $ref.BucketName.rapid-sandbox-csetest-data

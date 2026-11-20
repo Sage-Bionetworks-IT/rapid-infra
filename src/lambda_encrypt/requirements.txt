@@ -1,0 +1,3 @@
+aws-encryption-sdk==4.0.7
+# Pinned rather than the runtime's: delete_staged needs DeleteObject's IfMatch
+boto3==1.43.126

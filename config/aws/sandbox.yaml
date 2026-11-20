@@ -46,3 +46,12 @@ BUCKETS:
   - bucket_name: rapid-sandbox-kmstest-data
     synapse_owner_ids: [3627882]
     kms_encryption: true
+
+  # Client-side encryption trial (README: "Client-side encryption"): its own bucket and
+  # project ("RAPID CSE Test" in config/synapse/sandbox.yaml). Uncomment both to try it
+  # - bucket_name: rapid-sandbox-csetest-data
+  #   synapse_owner_ids: [3627882]
+  #   client_side_encryption:
+  #     encrypted_bucket_name: rapid-sandbox-csetest-encrypted
+  #     patterns: ["**/*.vcf", "**/*.ndjson"]
+  #     decrypt_arns: []
