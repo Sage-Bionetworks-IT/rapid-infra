@@ -8,7 +8,8 @@ its own S3 bucket, connected to its own Synapse project. Providers upload a fold
 then a `sidecar.json` in it; the sidecar's arrival indexes every file in the folder into the
 provider's Synapse project, as Synapse files that point at the S3 objects (no data is copied).
 
-So far, only the provider buckets: the sync pipeline comes next.
+So far, only the provider buckets and the indexing code (`src/lambda_sync/indexer.py`); the
+sync pipeline that runs it comes next.
 
 The skeleton follows Sage IT's
 [aws-cdk-ecs-infra-template](https://github.com/Sage-Bionetworks-IT/aws-cdk-ecs-infra-template)
@@ -106,6 +107,15 @@ projects:
 service account always among them. Providers do not need to be in it: they only use the service
 account's locations (Synapse uploads, STS credentials), which takes permission on the project,
 not ownership of the bucket.
+
+## Indexing code
+
+`src/lambda_sync/indexer.py` is ported from
+[s3-synapse-sync](https://github.com/Sage-Bionetworks/s3-synapse-sync) (Apache-2.0; attribution
+in the module docstring). Only the indexing core is taken: not its S3-notification handler,
+Minerva/Batch processing or HTAN-specific configuration. It uses synapseclient's object models
+(`synapseclient.models`), not the client methods deprecated in 4.x. The module docstring lists
+what changed.
 
 ## Development
 
