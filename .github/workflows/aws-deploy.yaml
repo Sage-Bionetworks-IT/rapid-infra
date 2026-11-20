@@ -64,7 +64,7 @@ jobs:
     needs: deploy
     runs-on: ubuntu-latest
     # Runs in the GitHub environment for its SYNAPSE_AUTH_TOKEN secret (the PAT of
-    # SYNAPSE.service_account_id), since a caller can't pass environment secrets in. The deploy
+    # SYNAPSE.service_account_id); the callers' secrets: inherit makes it visible here. The deploy
     # job stays out of it: an environment changes the OIDC subject claim its AWS role trusts.
     environment: ${{ inputs.environment }}
     permissions:
