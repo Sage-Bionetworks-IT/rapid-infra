@@ -13,7 +13,10 @@ idempotently, as the sync service account:
 2. Its upload destination: a non-STS external S3 location on the bucket, where indexed files
    live, set as the project's ONLY upload location (replacing any other, including Synapse's
    default storage). Synapse checks the bucket's owner.txt lists the service account.
-3. apply_project_template(): placeholder for the rest of the project setup.
+3. Its sharing settings, made to match the project's acl, as CloudFormation does a stack's
+   resources: each principal in it gets exactly its permission level, and every other principal
+   (anyone shared by hand, public access) is removed, except the service account.
+4. apply_project_template(): placeholder for the rest of the project setup.
 
 It must run as the service account in the bucket stack's SynapseServiceAccountId output: only a
 storage location's creator may create file handles in it, which is what the sync does.
@@ -41,7 +44,7 @@ from synapseclient.models import (  # noqa: E402
 )
 from synapseclient.operations import find_entity_id  # noqa: E402
 
-from src.synapse_template import load_template  # noqa: E402
+from src.synapse_template import PERMISSIONS, load_template  # noqa: E402
 
 
 class SetupError(Exception):
@@ -106,6 +109,7 @@ def setup_project(syn, me: str, project: dict, bucket: dict) -> dict:
         project_id = ensure_project(syn, name)
         # Straight after creation: nothing can be uploaded to the project before this
         location_id = ensure_only_location(syn, Project(id=project_id), bucket_name)
+        acl_changes = ensure_acl(syn, Project(id=project_id), project.get("acl", []), me)
         apply_project_template(syn, project_id, project)
     except SynapseHTTPError as e:
         if _status(e) in (400, 403):
@@ -116,6 +120,8 @@ def setup_project(syn, me: str, project: dict, bucket: dict) -> dict:
             ) from e
         raise
     print(f"✓ {name}: {project_id} on s3://{bucket_name}, upload location {location_id}")
+    for change in acl_changes:
+        print(f"  sharing {change}")
     return {
         "name": name,
         "project_id": project_id,
@@ -159,16 +165,53 @@ def ensure_only_location(syn, container, bucket: str) -> int:
     return location_id
 
 
+def ensure_acl(syn, project, acl: list, me: str) -> list:
+    """
+    Make the project's sharing settings exactly the acl, plus the service account (whose admin
+    access is what lets this script manage the project, so it is never changed). Returns the
+    changes made, for the log.
+    """
+    wanted = {str(e["principal_id"]): PERMISSIONS[e["permission"]] for e in acl}
+    if me in wanted:
+        raise SetupError(
+            f"The acl lists the service account {me}: it administers the project already, and "
+            "changing its permissions would lock this setup out"
+        )
+    current = {
+        str(e.principal_id): e.permissions
+        for e in project.list_acl(synapse_client=syn).entity_acl
+        if str(e.principal_id) != me
+    }
+    changes = [
+        (principal, access)
+        for principal, access in wanted.items()
+        if sorted(current.get(principal, [])) != sorted(access)
+    ] + [(principal, []) for principal in current if principal not in wanted]
+
+    for principal, access in changes:
+        try:
+            # An empty access_type removes the principal from the ACL
+            project.set_permissions(
+                principal_id=int(principal), access_type=access, overwrite=True, synapse_client=syn
+            )
+        except SynapseHTTPError as e:
+            if _status(e) in (400, 404):
+                raise SetupError(
+                    f"Could not share the project with {principal}: {e}. Is it a Synapse team "
+                    "or user ID?"
+                ) from e
+            raise
+    return [f"{p}: {','.join(a) if a else 'removed'}" for p, a in changes]
+
+
 def apply_project_template(syn, project_id: str, project: dict) -> None:
     """
     Placeholder for the rest of a provider project's setup, along the lines of HTAN2's
     https://github.com/ncihtan/htan2_project_setup:
 
-    - teams, and project / folder permissions (a provider team, a RAPID admin team)
+    - teams, and folder permissions (project sharing is the template's acl, ensure_acl())
     - a versioned folder structure (e.g. ingest / staging / release) from a data model
     - JSON schema bindings, file views and curation tasks
-
-    Until then the project is visible only to the service account; share it by hand.
     """
 
 

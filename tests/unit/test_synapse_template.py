@@ -47,6 +47,45 @@ def test_invalid_template_rejected(projects, message):
         validate_template({"projects": projects})
 
 
+def _acl(*entries):
+    return [{"name": "RAPID A", "bucket": "rapid-test-a", "acl": list(entries)}]
+
+
+def test_acl_accepted():
+    validate_template(
+        {
+            "projects": _acl(
+                {"principal_id": 3629180, "permission": "edit"},
+                {"principal_id": "1", "permission": "admin"},
+            )
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "projects, message",
+    [
+        ([{"name": "RAPID A", "bucket": "rapid-test-a", "acl": {}}], r"acl must be a list"),
+        (_acl(3629180), r"acl\[0\] must be a mapping"),
+        (_acl({"principal_id": "team-a", "permission": "edit"}), r"acl\[0\].principal_id"),
+        (_acl({"permission": "edit"}), r"acl\[0\].principal_id"),
+        (_acl({"principal_id": True, "permission": "edit"}), r"acl\[0\].principal_id"),
+        (_acl({"principal_id": 1, "permission": "write"}), r"acl\[0\].permission 'write'"),
+        (_acl({"principal_id": 1}), r"acl\[0\].permission"),
+        (
+            _acl(
+                {"principal_id": 1, "permission": "edit"},
+                {"principal_id": "1", "permission": "view"},
+            ),
+            r"acl\[1\].principal_id '1' is listed twice",
+        ),
+    ],
+)
+def test_invalid_acl_rejected(projects, message):
+    with pytest.raises(ValueError, match=message):
+        validate_template({"projects": projects})
+
+
 @pytest.mark.parametrize("env", sorted(VALID_ENVS))
 def test_repo_templates_reference_configured_buckets(env):
     template = load_template(f"config/synapse/{env}.yaml")

@@ -7,6 +7,9 @@ stack in the CDK outputs, the way a Terraform resource takes another's output.
     projects:
       - name: RAPID dev provider 1   # the Synapse project (names are global in Synapse)
         bucket: rapid-dev-provider-a # a BUCKETS[].bucket_name in config/aws/{env}.yaml
+        acl:                         # optional: the project's sharing settings, exactly
+          - principal_id: 3629180    # a Synapse team or user ID
+            permission: edit         # a PERMISSIONS level
 
 No CDK imports: the setup script loads this without the CDK app.
 """
@@ -22,6 +25,25 @@ from src.utils import _BUCKET_NAME
 # Synapse entity names: letters, numbers, spaces, underscores, hyphens, periods, plus signs,
 # apostrophes and parentheses
 _SYNAPSE_NAME = re.compile(r"^[A-Za-z0-9 _.+'()-]{1,256}$")
+_SYNAPSE_PRINCIPAL = re.compile(r"^\d+$")
+
+# The permission levels of Synapse's sharing settings dialog, as access types
+PERMISSIONS = {
+    "view": ["READ"],
+    "download": ["READ", "DOWNLOAD"],
+    "edit": ["READ", "DOWNLOAD", "CREATE", "UPDATE"],
+    "edit_delete": ["READ", "DOWNLOAD", "CREATE", "UPDATE", "DELETE"],
+    "admin": [
+        "READ",
+        "DOWNLOAD",
+        "CREATE",
+        "UPDATE",
+        "DELETE",
+        "CHANGE_PERMISSIONS",
+        "CHANGE_SETTINGS",
+        "MODERATE",
+    ],
+}
 
 
 def load_template(path) -> Dict[str, Any]:
@@ -52,3 +74,24 @@ def validate_template(template: Dict[str, Any]) -> None:
                 # One project per bucket: each provider's data indexes into its own project
                 raise ValueError(f"{where}.{field} '{value}' is used by another project")
             seen[field].add(value)
+        _validate_acl(where, project.get("acl", []))
+
+
+def _validate_acl(where: str, acl: Any) -> None:
+    if not isinstance(acl, list):
+        raise ValueError(f"{where}.acl must be a list")
+    principals = set()
+    for j, entry in enumerate(acl):
+        at = f"{where}.acl[{j}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{at} must be a mapping")
+        principal, permission = entry.get("principal_id"), entry.get("permission")
+        if isinstance(principal, bool) or not _SYNAPSE_PRINCIPAL.match(str(principal)):
+            raise ValueError(f"{at}.principal_id '{principal}' must be a Synapse team or user ID")
+        if permission not in PERMISSIONS:
+            raise ValueError(
+                f"{at}.permission '{permission}' must be one of {', '.join(PERMISSIONS)}"
+            )
+        if str(principal) in principals:
+            raise ValueError(f"{at}.principal_id '{principal}' is listed twice")
+        principals.add(str(principal))

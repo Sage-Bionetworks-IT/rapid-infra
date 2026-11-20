@@ -16,7 +16,7 @@ SYNAPSE:
 
 BUCKETS:
   # Globally unique S3 bucket name
-  - bucket_name: rapid-dev-example-data  # TODO
+  - bucket_name: rapid-dev-example-data
     # Synapse user or team IDs written to owner.txt (the service account is added for you)
     synapse_owner_ids: [3627882]
     # Optional. IAM principals (ARNs) with read/write on the objects

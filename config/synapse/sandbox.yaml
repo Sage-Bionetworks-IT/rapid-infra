@@ -2,3 +2,6 @@
 projects:
   - name: RAPID sandbox provider
     bucket: rapid-dev-example-data
+    acl:
+      - principal_id: 3629180
+        permission: edit

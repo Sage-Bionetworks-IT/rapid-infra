@@ -6,3 +6,10 @@ projects:
   # global in Synapse; renaming one here makes a new project, so rename it in Synapse first
   - name: RAPID dev provider 1  # TODO
     bucket: rapid-dev-provider-example
+    # The project's sharing settings: Synapse teams or users, each with a permission level of
+    # view, download, edit, edit_delete or admin. The setup makes Synapse match this list:
+    # anyone not in it (shared by hand, public access) is removed, except the service account.
+    # Optional; none means only the service account has access
+    acl:
+      - principal_id: 3629180
+        permission: edit

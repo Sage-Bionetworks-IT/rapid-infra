@@ -13,6 +13,7 @@ setup = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(setup)
 
 SERVICE_ACCOUNT = "1234567"
+ADMIN = ["READ", "DOWNLOAD", "CREATE", "UPDATE", "DELETE", "CHANGE_PERMISSIONS", "CHANGE_SETTINGS"]
 DEFAULT_SYNAPSE_STORAGE = 1
 
 
@@ -32,6 +33,9 @@ class FakeSynapse:
         self.locations = {}  # bucket -> id
         self.user = SERVICE_ACCOUNT
         self.invisible_projects = set()  # names taken by projects the user cannot see
+        self.acls = {}  # project id -> {principal id (str): access types}
+        self.acl_writes = 0
+        self.unknown_principals = set()
         self._next = 100
 
     def login(self, **kwargs):
@@ -42,6 +46,8 @@ class FakeSynapse:
             raise _http_error(409)
         self._next += 1
         self.projects[name] = f"syn{self._next}"
+        # Synapse makes the creator an administrator
+        self.acls[self.projects[name]] = {self.user: ADMIN}
         return self.projects[name]
 
 
@@ -69,6 +75,26 @@ class FakeProject:
 
     def set_storage_location(self, *, storage_location_id, synapse_client):
         synapse_client.settings[self.id] = [storage_location_id]
+
+    def list_acl(self, *, synapse_client):
+        acl = synapse_client.acls.get(self.id, {})
+        return SimpleNamespace(
+            entity_acl=[
+                SimpleNamespace(principal_id=p, permissions=list(a)) for p, a in acl.items()
+            ]
+        )
+
+    def set_permissions(self, *, principal_id, access_type, overwrite, synapse_client):
+        assert overwrite is True, "the principal gets exactly its level"
+        assert isinstance(principal_id, int)
+        if principal_id in synapse_client.unknown_principals:
+            raise _http_error(404)
+        synapse_client.acl_writes += 1
+        acl = synapse_client.acls.setdefault(self.id, {})
+        if access_type:
+            acl[str(principal_id)] = list(access_type)
+        else:  # an empty access_type removes the principal
+            acl.pop(str(principal_id), None)
 
 
 class FakeStorageLocation:
@@ -143,6 +169,58 @@ def test_existing_project_loses_every_other_upload_location(syn):
     setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
 
     assert syn.settings[project_id] == [syn.locations["rapid-test-a"]]
+
+
+TEAM = 3629180
+EDIT = ["READ", "DOWNLOAD", "CREATE", "UPDATE"]
+SHARED = {**PROJECT, "acl": [{"principal_id": TEAM, "permission": "edit"}]}
+
+
+def test_shares_the_project(syn):
+    setup.setup_project(syn, SERVICE_ACCOUNT, SHARED, BUCKET)
+    assert syn.acls[syn.projects["RAPID A"]] == {SERVICE_ACCOUNT: ADMIN, "3629180": EDIT}
+
+
+def test_rerun_leaves_the_acl_alone(syn):
+    setup.setup_project(syn, SERVICE_ACCOUNT, SHARED, BUCKET)
+    setup.setup_project(syn, SERVICE_ACCOUNT, SHARED, BUCKET)
+    assert syn.acl_writes == 1
+
+
+def test_acl_is_made_to_match_the_template(syn):
+    project_id = syn.create_project("RAPID A")
+    # Shared by hand: the team with more than the template's level, someone else, the public
+    syn.acls[project_id].update({"3629180": EDIT + ["DELETE"], "42": ["READ"], "273949": ["READ"]})
+
+    setup.setup_project(syn, SERVICE_ACCOUNT, SHARED, BUCKET)
+
+    assert syn.acls[project_id] == {SERVICE_ACCOUNT: ADMIN, "3629180": EDIT}
+
+
+def test_entry_taken_off_the_acl_is_removed(syn):
+    setup.setup_project(syn, SERVICE_ACCOUNT, SHARED, BUCKET)
+    setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)  # no acl
+    assert syn.acls[syn.projects["RAPID A"]] == {SERVICE_ACCOUNT: ADMIN}
+
+
+def test_service_account_access_is_never_changed(syn):
+    project_id = syn.create_project("RAPID A")
+    syn.acls[project_id][SERVICE_ACCOUNT] = ADMIN + ["MODERATE"]
+    setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
+    assert syn.acls[project_id] == {SERVICE_ACCOUNT: ADMIN + ["MODERATE"]}
+
+
+def test_acl_must_not_list_the_service_account(syn):
+    project = {**PROJECT, "acl": [{"principal_id": SERVICE_ACCOUNT, "permission": "view"}]}
+    with pytest.raises(setup.SetupError, match="lists the service account"):
+        setup.setup_project(syn, SERVICE_ACCOUNT, project, BUCKET)
+    assert syn.acl_writes == 0
+
+
+def test_acl_unknown_principal(syn):
+    syn.unknown_principals.add(TEAM)
+    with pytest.raises(setup.SetupError, match="share the project with 3629180"):
+        setup.setup_project(syn, SERVICE_ACCOUNT, SHARED, BUCKET)
 
 
 def test_name_taken_by_an_invisible_project(syn):

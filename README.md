@@ -54,8 +54,13 @@ as the service account (the bucket stack's `SynapseServiceAccountId` output):
    the project's **only** upload destination (replacing any other, including Synapse's default
    storage). Synapse checks the bucket's `owner.txt` for the service account, which is why this
    runs after the deploy.
-3. `apply_project_template()`: a placeholder for the rest of the project setup (provider and
-   admin teams and permissions, folder structures, schema bindings, file views, curation tasks),
+3. Makes the project's sharing settings match its `acl`, the way CloudFormation makes a stack
+   match its template: each team or user in it gets exactly that permission level (`view`,
+   `download`, `edit`, `edit_delete` or `admin`, as in Synapse's sharing dialog), and anyone else
+   (shared by hand, public access) is removed. The service account's own access is never
+   changed. Share projects in the template, not in Synapse: changes made by hand are undone.
+4. `apply_project_template()`: a placeholder for the rest of the project setup (teams, folder
+   permissions, folder structures, schema bindings, file views, curation tasks),
    along the lines of [htan2_project_setup](https://github.com/ncihtan/htan2_project_setup).
 
 The job summary lists each project's ID, bucket and upload location. A project that fails (say,
@@ -87,6 +92,9 @@ BUCKETS:
 projects:
   - name: RAPID dev provider 1       # Synapse project names are global
     bucket: rapid-dev-provider-example  # the bucket_name above
+    acl:                             # optional: the project's sharing settings, exactly
+      - principal_id: 3629180        # a Synapse team or user ID
+        permission: edit             # view, download, edit, edit_delete or admin
 ```
 
 `owner.txt` (`synapse_owner_ids`) lists who may register a storage location on the bucket, the
