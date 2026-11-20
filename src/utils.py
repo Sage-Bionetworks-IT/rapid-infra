@@ -5,8 +5,16 @@ from typing import Any, Dict
 
 import yaml
 
-# sandbox: a personal test account, deployed from a laptop (config/sandbox.yaml); never by CI
+# sandbox: a personal test account, deployed from a laptop (config/aws/sandbox.yaml); never by CI
 VALID_ENVS = {"dev", "prod", "sandbox"}
+
+# https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html (the common subset),
+# without dots: the bucket name is in its stack's name, where dots are not allowed (and AWS
+# advises against them, as they break virtual-hosted-style HTTPS)
+_BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
+_SYNAPSE_PRINCIPAL = re.compile(r"^\d+$")
+
+_BUCKET_LIST_FIELDS = ("synapse_owner_ids", "s3_user_arns", "s3_admin_arns", "deny_delete_arns")
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -20,7 +28,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def load_context_config(env_name: str, config_dir: str = "config") -> Dict[str, Any]:
+def load_context_config(env_name: str, config_dir: str = "config/aws") -> Dict[str, Any]:
     """
     Load AWS CDK context configuration from a YAML or JSON file.
 
@@ -77,10 +85,41 @@ def _read_file(path: Path) -> Dict[str, Any]:
 
 def validate_config(config: Dict[str, Any]) -> None:
     """Fail synth early, with the offending key, instead of at deploy time."""
-    for key in ("PROJECT_NAME",):
+    for key in ("PROJECT_NAME", "SYNAPSE"):
         if key not in config:
             raise ValueError(f"Missing config key {key}")
+
+    service_account = str(config["SYNAPSE"].get("service_account_id", ""))
+    if not _SYNAPSE_PRINCIPAL.match(service_account):
+        raise ValueError(
+            f"SYNAPSE.service_account_id must be a numeric Synapse user ID, got '{service_account}'"
+        )
 
     account = config.get("AWS_ACCOUNT")
     if account is not None and not re.fullmatch(r"\d{12}", str(account)):
         raise ValueError(f"AWS_ACCOUNT must be a 12-digit AWS account ID, got '{account}'")
+
+    seen = set()
+    for i, bucket in enumerate(config.get("BUCKETS") or []):
+        where = f"BUCKETS[{i}]"
+        _validate_bucket(where, bucket)
+        if bucket["bucket_name"] in seen:
+            raise ValueError(
+                f"{where}.bucket_name '{bucket['bucket_name']}' is used by another bucket"
+            )
+        seen.add(bucket["bucket_name"])
+
+
+def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
+    if not bucket.get("bucket_name"):
+        raise ValueError(f"{where}.bucket_name is required")
+    if not _BUCKET_NAME.match(bucket["bucket_name"]):
+        raise ValueError(
+            f"{where}.bucket_name '{bucket['bucket_name']}' must match {_BUCKET_NAME.pattern}"
+        )
+    for field in _BUCKET_LIST_FIELDS:
+        if not isinstance(bucket.get(field, []), list):
+            raise ValueError(f"{where}.{field} must be a list")
+    for owner in bucket.get("synapse_owner_ids", []):
+        if not _SYNAPSE_PRINCIPAL.match(str(owner)):
+            raise ValueError(f"{where}.synapse_owner_ids: '{owner}' is not a numeric Synapse ID")

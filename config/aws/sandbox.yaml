@@ -1,0 +1,29 @@
+# A personal test environment in the DNT dev account (profile dnt-dev-admin), not RAPID's dev.
+# Deployed from a laptop, never by CI:
+#   cdk deploy --context env=sandbox --all --profile dnt-dev-admin --outputs-file cdk-outputs.json
+#   SYNAPSE_AUTH_TOKEN=... python tools/setup_synapse_projects.py \
+#     --template config/synapse/sandbox.yaml --cdk-outputs cdk-outputs.json
+# Stacks: rapid-sandbox-bucket-rapid-dev-example-data
+
+# Deploys with credentials for any other account fail
+AWS_ACCOUNT: "631692904429"
+
+SYNAPSE:
+  aws_account_id: "325565585839"
+  # For a test, your own Synapse user works: tools/setup_synapse_projects.py creates the test
+  # project with its PAT (SYNAPSE_AUTH_TOKEN), so it administers the project
+  service_account_id: "3324230"  # the user whose PAT you use
+
+BUCKETS:
+  # Globally unique S3 bucket name
+  - bucket_name: rapid-dev-example-data
+    # Synapse user or team IDs written to owner.txt (the service account is added for you)
+    synapse_owner_ids: [3627882]
+    # Optional. IAM principals (ARNs) with read/write on the objects
+    s3_user_arns: []
+    # Optional. IAM principals (ARNs) with full access to the bucket
+    s3_admin_arns: []
+    # Optional. IAM principals (ARNs) denied every s3:*Delete* on the objects
+    deny_delete_arns: []
+    # Optional, default false
+    versioned: false

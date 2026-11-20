@@ -16,3 +16,5 @@ jobs:
       role-to-assume: "arn:aws:iam::576802370683:role/sagebase-github-oidc-sage-bionetworks-rapid-dev-infra"
       role-session-name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
       environment: dev
+    secrets:
+      SYNAPSE_AUTH_TOKEN: ${{ secrets.SYNAPSE_AUTH_TOKEN }}

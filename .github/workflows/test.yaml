@@ -34,9 +34,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - uses: actions/setup-node@v6
+      - run: npm install -g aws-cdk
       - run: pip install -r requirements.txt
-      # The CDK CLI fails on an app without stacks; running the app still loads and validates the
-      # environment's config. `cdk synth` replaces this with the first stack.
-      - run: python app.py
-        env:
-          CDK_CONTEXT_JSON: '{"env": "${{ inputs.environment }}"}'
+      - run: cdk synth --context env=${{ inputs.environment }} --no-lookups --output ./cdk.out
