@@ -20,10 +20,6 @@ on:
       environment:
         required: true
         type: string
-    secrets:
-      # The Synapse service account's PAT (SYNAPSE.service_account_id)
-      SYNAPSE_AUTH_TOKEN:
-        required: true
 
 # One deploy per environment at a time
 concurrency:
@@ -67,6 +63,10 @@ jobs:
   synapse-setup:
     needs: deploy
     runs-on: ubuntu-latest
+    # Runs in the GitHub environment for its SYNAPSE_AUTH_TOKEN secret (the PAT of
+    # SYNAPSE.service_account_id), since a caller can't pass environment secrets in. The deploy
+    # job stays out of it: an environment changes the OIDC subject claim its AWS role trusts.
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
     steps:

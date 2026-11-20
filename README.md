@@ -175,8 +175,8 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 1. **Synapse service account.** Set its user ID in `SYNAPSE.service_account_id`
    (`config/aws/`). It is written to every bucket's `owner.txt`, so it can create the bucket's
    Synapse storage location, and output by every bucket stack for the Synapse setup.
-2. **Its PAT** (view, download and modify scopes) as the `SYNAPSE_AUTH_TOKEN` repository
-   secret, which `deploy-dev.yaml` and `deploy-prod.yaml` pass to the `synapse-setup` job.
+2. **Its PAT** (view, download and modify scopes) as the `SYNAPSE_AUTH_TOKEN` secret of the
+   environment's GitHub environment (`dev`, `prod`), which the `synapse-setup` job runs in.
 
 ### Per provider bucket
 
