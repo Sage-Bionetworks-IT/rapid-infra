@@ -5,4 +5,4 @@ SYNAPSE:
   # (its PAT is also the SYNAPSE_AUTH_TOKEN GitHub secret).
   service_account_id: "3631549"  # rapid-prod-infra-service
 
-ALARM_EMAIL: ""  # TODO: e.g. aws-rapid-prod@sagebase.org
+ALARM_EMAIL: "aws-rapid-prod@sagebase.org"
