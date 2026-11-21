@@ -215,13 +215,11 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 1. **Synapse service account.** Set its user ID in `SYNAPSE.service_account_id`
    (`config/aws/`). It is written to every bucket's `owner.txt`, so it can create the bucket's
    Synapse storage location, and output by every bucket stack for the Synapse setup.
-2. **Its PAT** (view, download and modify scopes), in two places: the `SYNAPSE_AUTH_TOKEN`
-   secret of the environment's GitHub environment (`dev`, `prod`), which the `synapse-setup`
-   job runs in, and, after the first deploy, the pipeline's secret for the sync Lambdas:
-   ```console
-   aws --profile <profile> secretsmanager put-secret-value \
-     --secret-id rapid-dev-pipeline/synapse-pat --secret-string '<PAT>'
-   ```
+2. **Its PAT** (view, download and modify scopes), as the `SYNAPSE_AUTH_TOKEN` secret of the
+   environment's GitHub environment (`dev`, `prod`). The `synapse-setup` job logs in with it,
+   and every deploy copies it into the pipeline's secret for the sync Lambdas
+   (`<stack prefix>-pipeline/synapse-pat`) when it differs. To rotate it, update the GitHub
+   secret and redeploy.
 3. **Alarm email.** Set `ALARM_EMAIL` and confirm the SNS subscription email.
 
 ### Per provider bucket
