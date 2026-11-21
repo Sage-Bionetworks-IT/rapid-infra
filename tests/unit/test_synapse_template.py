@@ -37,6 +37,8 @@ def test_empty_template_has_no_projects(tmp_path):
         ([{"name": "RAPID A", "bucket": "Not A Bucket"}], r"projects\[0\].bucket"),
         # A bucket_name, not a reference to its stack
         ([{"name": "RAPID A", "bucket": "rapid-test-a"}], r"projects\[0\].bucket"),
+        ([{"name": "RAPID A", "bucket": A, "sts_folder": "a/b"}], r"projects\[0\].sts_folder"),
+        ([{"name": "RAPID A", "bucket": A, "sts_folder": "  "}], r"projects\[0\].sts_folder"),
         # A reference, but to another output
         (
             [{"name": "RAPID A", "bucket": "$ref.BucketArn.rapid-test-a"}],
