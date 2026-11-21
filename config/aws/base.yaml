@@ -2,7 +2,7 @@
 # config/aws/{env}.yaml: env wins, nested mappings merge key by key (an env file only lists the
 # keys it changes), lists are replaced. Synapse resources are in config/synapse/{env}.yaml.
 
-# Stack names are {PROJECT_NAME}-{env}-bucket-{bucket_name}
+# Stack names are {PROJECT_NAME}-{env}-pipeline and {PROJECT_NAME}-{env}-bucket-{bucket_name}
 PROJECT_NAME: rapid
 
 TAGS:
@@ -12,10 +12,24 @@ SYNAPSE:
   # Synapse's AWS account; it reads/writes the bucket for Synapse uploads and downloads.
   # https://help.synapse.org/docs/Custom-Storage-Locations.2048327803.html
   aws_account_id: "325565585839"
-  # The Synapse user the sync will log in as. It is added to every bucket's owner.txt, since
-  # it must create the storage locations, and each bucket stack outputs it for
-  # tools/setup_synapse_projects.py, which must run as this user (SYNAPSE_AUTH_TOKEN secret).
+  # The Synapse user the sync Lambda logs in as (its PAT is in the pipeline stack's secret). It
+  # is added to every bucket's owner.txt, since it must create the storage locations, and each
+  # bucket stack outputs it for tools/setup_synapse_projects.py, which must run as this user
+  # (its PAT is also the SYNAPSE_AUTH_TOKEN GitHub secret).
   service_account_id: ""
+
+SYNC:
+  # The completion sentinel: uploading {folder}/sidecar.json syncs everything under {folder}/
+  sidecar_filename: sidecar.json
+  # Per-file sync Lambdas running at once for one sidecar (Synapse API rate is the limit)
+  max_concurrency: 10
+  # Percentage of a folder's files allowed to fail before the execution fails (0: any failure)
+  tolerated_failure_percentage: 0
+  # Days the per-run result files are kept in the results bucket
+  results_retention_days: 90
+
+# Alarm emails (failed sync executions). Confirm the SNS subscription once. Empty: no email.
+ALARM_EMAIL: ""
 
 # Synapse-connected buckets. One stack per entry; see config/aws/dev.yaml for the fields. Each
 # one's Synapse project is in config/synapse/{env}.yaml.

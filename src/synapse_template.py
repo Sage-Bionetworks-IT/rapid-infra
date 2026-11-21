@@ -12,7 +12,8 @@ a Terraform resource takes another's output.
           - principal_id: 3629180    # a Synapse team or user ID
             permission: edit         # a PERMISSIONS level
 
-No CDK imports: the setup script loads this without the CDK app.
+No CDK imports: the setup script loads this without the CDK app. The CDK app reads only the
+project names (project_names), for the pipeline.
 """
 
 import re
@@ -136,3 +137,18 @@ def _validate_acl(where: str, acl: Any) -> None:
         if str(principal) in principals:
             raise ValueError(f"{at}.principal_id '{principal}' is listed twice")
         principals.add(str(principal))
+
+
+def project_names(template: Dict[str, Any], buckets: list) -> Dict[str, str]:
+    """
+    {BUCKETS bucket_name: project name} for the CDK app, whose pipeline indexes each bucket's
+    sidecars into its project: every bucket must have one.
+    """
+    names = {parse_ref(p["bucket"]).bucket: p["name"] for p in template["projects"]}
+    missing = [b["bucket_name"] for b in buckets if b["bucket_name"] not in names]
+    if missing:
+        raise ValueError(
+            f"BUCKETS {', '.join(missing)} have no project in the Synapse template "
+            "(config/synapse/{env}.yaml): the pipeline would have nowhere to index them"
+        )
+    return {b["bucket_name"]: names[b["bucket_name"]] for b in buckets}

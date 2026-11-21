@@ -3,7 +3,7 @@
 #   cdk deploy --context env=sandbox --all --profile dnt-dev-admin --outputs-file cdk-outputs.json
 #   SYNAPSE_AUTH_TOKEN=... python tools/setup_synapse_projects.py \
 #     --template config/synapse/sandbox.yaml --cdk-outputs cdk-outputs.json
-# Stacks: rapid-sandbox-bucket-rapid-dev-example-data
+# Stacks: rapid-sandbox-bucket-rapid-dev-example-data, rapid-sandbox-pipeline
 
 # Deploys with credentials for any other account fail
 AWS_ACCOUNT: "631692904429"
@@ -13,6 +13,14 @@ SYNAPSE:
   # For a test, your own Synapse user works: tools/setup_synapse_projects.py creates the test
   # project with its PAT (SYNAPSE_AUTH_TOKEN), so it administers the project
   service_account_id: "3324230"  # the user whose PAT you use
+
+SYNC:
+  sidecar_filename: sidecar.json
+  max_concurrency: 5
+  tolerated_failure_percentage: 0
+  results_retention_days: 7
+
+ALARM_EMAIL: ""
 
 BUCKETS:
   # Globally unique S3 bucket name
