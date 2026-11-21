@@ -3,7 +3,8 @@
 #   cdk deploy --context env=sandbox --all --profile dnt-dev-admin --outputs-file cdk-outputs.json
 #   SYNAPSE_AUTH_TOKEN=... python tools/setup_synapse_projects.py \
 #     --template config/synapse/sandbox.yaml --cdk-outputs cdk-outputs.json
-# Stacks: rapid-sandbox-bucket-rapid-dev-example-data, rapid-sandbox-pipeline
+# Stacks: rapid-sandbox-bucket-rapid-dev-example-data,
+# rapid-sandbox-bucket-rapid-sandbox-kmstest-data, rapid-sandbox-pipeline
 
 # Deploys with credentials for any other account fail
 AWS_ACCOUNT: "631692904429"
@@ -22,6 +23,10 @@ SYNC:
 
 ALARM_EMAIL: ""
 
+# Off: the DNT dev account already has a trail logging every S3 data event (test-s3-trail)
+S3_DATA_EVENTS:
+  enabled: false
+
 BUCKETS:
   # Globally unique S3 bucket name
   - bucket_name: rapid-dev-example-data
@@ -35,3 +40,9 @@ BUCKETS:
     deny_delete_arns: []
     # Optional, default false
     versioned: false
+
+  # SSE-KMS trial (README: "SSE-KMS"): its own bucket and project, so the bucket above keeps
+  # working for contribution tests. Expect STS uploads (contribute.py) to get AccessDenied
+  - bucket_name: rapid-sandbox-kmstest-data
+    synapse_owner_ids: [3627882]
+    kms_encryption: true
