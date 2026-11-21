@@ -89,6 +89,23 @@ def test_bucket_policy_grants_synapse_and_provider(bucket_template):
     assert "AdminAccess" not in statements  # no admins configured
 
 
+def test_no_downloads_through_synapse(bucket_template):
+    # Synapse downloads are pre-signed GETs; its HeadObject (file handles) and owner.txt read
+    # use header auth, so only query-string reads by its account are denied
+    statements = _statements(bucket_template, "AWS::S3::BucketPolicy")
+    deny = statements["DenySynapseDownloads"]
+    assert deny["Effect"] == "Deny" and deny["Principal"] == {"AWS": "*"}
+    assert deny["Action"] == "s3:GetObject*"
+    assert deny["Condition"] == {
+        "StringEquals": {
+            "aws:PrincipalAccount": "325565585839",
+            "s3:authType": "REST-QUERY-STRING",
+        }
+    }
+    # The objects only (not the bucket): listing is untouched
+    assert deny["Resource"]["Fn::Join"][1][-1] == "/*"
+
+
 def test_owner_file_includes_service_account(bucket_template):
     (owner,) = bucket_template.find_resources("Custom::AWS").values()
     create = json.dumps(owner["Properties"]["Create"])

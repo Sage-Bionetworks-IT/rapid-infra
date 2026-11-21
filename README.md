@@ -81,6 +81,24 @@ The job summary lists each project's ID, bucket and upload location. A project t
 its bucket stack is missing from the outputs) does not stop the others; fix it and use "Re-run
 failed jobs".
 
+### No downloads through Synapse
+
+Data leaves the provider buckets only through our own principals (the pipeline,
+`s3_user_arns`, `s3_admin_arns`), never through Synapse. Synapse serves a file in an external
+S3 location as an S3 pre-signed GET signed with its own credentials (`FileHandleManagerImpl`),
+so `DenySynapseDownloads` denies Synapse's account `s3:GetObject*` on the objects when the
+request is authenticated by query string (`s3:authType` = `REST-QUERY-STRING`). The Synapse
+website, `synapseclient` and previews get Access Denied from S3.
+
+Synapse's server-side calls use header auth and keep working, as they must: reading
+`owner.txt` to create a storage location, and the `HeadObject` behind every file handle the
+pipeline creates. IAM cannot tell a `HeadObject` from a `GetObject` (both are `s3:GetObject`),
+so the bucket cannot deny Synapse's server-side reads without breaking indexing. That leaves
+one way out through Synapse: **zip/bulk download** (the download list, "Download as zip"),
+which Synapse's workers build with a server-side `GetObject` (`FileHandlePackageManagerImpl`).
+That one is up to Synapse's own access controls: a project's `acl` levels above `view`
+include `DOWNLOAD`.
+
 ## Configuration
 
 Config is split by the system it configures:

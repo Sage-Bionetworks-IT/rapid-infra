@@ -15,7 +15,9 @@ class SynapseBucketStack(cdk.Stack):
     sidecar uploads. That also removes the template's two-pass deploy.
 
     - Bucket policy: Synapse's AWS account may list the bucket and read/write objects, as
-      Synapse needs for uploads/downloads through Synapse clients
+      Synapse needs for uploads, owner.txt and file handles (a HeadObject per indexed file)
+    - No downloads through Synapse: the bucket policy denies Synapse's account pre-signed
+      object reads, which is how the Synapse website and clients download (README)
     - owner.txt at the root, listing the Synapse users/teams allowed to create a storage
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
@@ -118,6 +120,8 @@ class SynapseBucketStack(cdk.Stack):
                 )
             )
 
+        self._deny_synapse_downloads(synapse_aws_account_id)
+
         # owner.txt proves bucket ownership to Synapse when a storage location is created. The
         # creator must be listed, and only the storage location's creator may create file
         # handles in it, so the sync service account is always included.
@@ -153,3 +157,29 @@ class SynapseBucketStack(cdk.Stack):
         cdk.CfnOutput(self, "BucketArn", value=self.bucket.bucket_arn)
         # Read by tools/setup_synapse_projects.py (from the CDK outputs), which must run as this user
         cdk.CfnOutput(self, "SynapseServiceAccountId", value=str(synapse_service_account_id))
+
+    def _deny_synapse_downloads(self, synapse_aws_account_id: str) -> None:
+        """
+        No downloads through Synapse. Synapse serves a file in an external S3 location as an S3
+        pre-signed GET signed with its own credentials (FileHandleManagerImpl
+        getUrlForS3FileHandle; never CloudFront for a bucket not its own), so denying its
+        account query-string-authenticated reads blocks the website, synapseclient and preview
+        downloads. Synapse's server-side calls use header auth and still work: reading
+        owner.txt for a storage location, and the HeadObject that creating each file handle
+        needs (IAM cannot tell a HeadObject from a GetObject, so those cannot be denied).
+        """
+        self.bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenySynapseDownloads",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:GetObject*"],
+                resources=[self.bucket.arn_for_objects("*")],
+                conditions={
+                    "StringEquals": {
+                        "aws:PrincipalAccount": synapse_aws_account_id,
+                        "s3:authType": "REST-QUERY-STRING",
+                    }
+                },
+            )
+        )
