@@ -67,8 +67,8 @@ class SyncPipelineStack(cdk.Stack):
         object_arns = [f"{arn}/*" for arn in bucket_arns]
 
         # -------------------
-        # Synapse service account PAT. Created with a placeholder value; set the real token
-        # once after the first deploy (README: "Synapse service account").
+        # Synapse service account PAT. Created with a placeholder value; the deploy workflow
+        # sets it to the GitHub environment's SYNAPSE_AUTH_TOKEN (sandbox: README, by hand).
         # -------------------
         self.pat_secret = secretsmanager.Secret(
             self,

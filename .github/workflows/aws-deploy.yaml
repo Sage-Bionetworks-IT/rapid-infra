@@ -29,6 +29,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # In the GitHub environment for its SYNAPSE_AUTH_TOKEN secret (the callers' secrets: inherit
+    # makes it visible here). The OIDC subject becomes repo:<org>/<repo>:environment:<env>, which
+    # the AWS role trusts (Sage IT's github-oidc-provider template trusts environment:*).
+    environment: ${{ inputs.environment }}
     permissions:
       id-token: write
       contents: read
@@ -55,6 +59,30 @@ jobs:
       - run: >-
           cdk deploy --context env=${{ inputs.environment }} --all --concurrency 5
           --require-approval never --outputs-file cdk-outputs.json
+      # The sync Lambdas' PAT: the environment's SYNAPSE_AUTH_TOKEN, so rotating it is "update
+      # the GitHub secret, redeploy". Put only when it changed, so a deploy adds no version.
+      - name: Set the pipeline's Synapse PAT
+        env:
+          SYNAPSE_AUTH_TOKEN: ${{ secrets.SYNAPSE_AUTH_TOKEN }}
+        run: |
+          arn=$(jq -r '[.[].SynapsePatSecretArn // empty][0] // empty' cdk-outputs.json)
+          if [ -z "$arn" ]; then
+            echo "No pipeline stack (no buckets), so no PAT secret to set"
+            exit 0
+          fi
+          if [ -z "$SYNAPSE_AUTH_TOKEN" ]; then
+            echo "::error::Set the ${{ inputs.environment }} environment's SYNAPSE_AUTH_TOKEN"
+            exit 1
+          fi
+          current=$(aws secretsmanager get-secret-value --secret-id "$arn" \
+            --query SecretString --output text)
+          if [ "$current" != "$SYNAPSE_AUTH_TOKEN" ]; then
+            aws secretsmanager put-secret-value --secret-id "$arn" \
+              --secret-string "$SYNAPSE_AUTH_TOKEN" > /dev/null
+            echo "Updated $arn"
+          else
+            echo "$arn is up to date"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: cdk-outputs
@@ -67,8 +95,7 @@ jobs:
     needs: deploy
     runs-on: ubuntu-latest
     # Runs in the GitHub environment for its SYNAPSE_AUTH_TOKEN secret (the PAT of
-    # SYNAPSE.service_account_id); the callers' secrets: inherit makes it visible here. The deploy
-    # job stays out of it: an environment changes the OIDC subject claim its AWS role trusts.
+    # SYNAPSE.service_account_id); the callers' secrets: inherit makes it visible here.
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
