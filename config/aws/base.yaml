@@ -31,6 +31,12 @@ SYNC:
 # Alarm emails (failed sync executions). Confirm the SNS subscription once. Empty: no email.
 ALARM_EMAIL: ""
 
+# A CloudTrail trail of S3 data events (every object read and write, with the caller) on the
+# provider buckets, in the pipeline stack. The org trail already records management events
+S3_DATA_EVENTS:
+  enabled: true
+  retention_days: 365
+
 # Synapse-connected buckets. One stack per entry; see config/aws/dev.yaml for the fields. Each
 # one's Synapse project is in config/synapse/{env}.yaml.
 BUCKETS: []

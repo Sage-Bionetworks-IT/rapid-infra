@@ -23,6 +23,25 @@ for key, value in (config.get("TAGS") or {}).items():
     cdk.Tags.of(cdk_app).add(key, value)
 
 buckets = config.get("BUCKETS") or []
+data_events = config.get("S3_DATA_EVENTS") or {}
+
+# One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
+# reference, so bucket stacks come and go without export/import ordering. Bucket stacks import
+# from it (a kms_encryption bucket, its reader roles and alarm topic); deleting an importing
+# stack is always allowed.
+if buckets:
+    pipeline_stack = SyncPipelineStack(
+        scope=cdk_app,
+        construct_id=f"{STACK_NAME_PREFIX}-pipeline",
+        buckets=buckets,
+        project_names=project_names(load_template(f"config/synapse/{env_name}.yaml"), buckets),
+        sync_config=config["SYNC"],
+        alarm_email=config.get("ALARM_EMAIL") or "",
+        s3_data_events_retention_days=(
+            data_events.get("retention_days") if data_events.get("enabled") else None
+        ),
+        env=env,
+    )
 
 # One stack per data provider bucket, so each can be added or retired on its own
 for bucket in buckets:
@@ -32,19 +51,9 @@ for bucket in buckets:
         bucket_config=bucket,
         synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
         synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
-        env=env,
-    )
-
-# One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
-# reference, so bucket stacks come and go without export/import ordering.
-if buckets:
-    SyncPipelineStack(
-        scope=cdk_app,
-        construct_id=f"{STACK_NAME_PREFIX}-pipeline",
-        buckets=buckets,
-        project_names=project_names(load_template(f"config/synapse/{env_name}.yaml"), buckets),
-        sync_config=config["SYNC"],
-        alarm_email=config.get("ALARM_EMAIL") or "",
+        # Read objects under a kms_encryption bucket's key (a role ARN import, only then)
+        kms_key_users=pipeline_stack.object_readers,
+        alarm_topic=pipeline_stack.alarm_topic,
         env=env,
     )
 
