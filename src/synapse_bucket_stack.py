@@ -1,8 +1,11 @@
 import aws_cdk as cdk
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_sns as sns
 from aws_cdk import custom_resources as cr
 from constructs import Construct
+
+from src.alarms import lambda_error_alarms
 
 
 class SynapseBucketStack(cdk.Stack):
@@ -20,6 +23,10 @@ class SynapseBucketStack(cdk.Stack):
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
     - The bucket is retained when the stack is deleted
+    - `data_store_tags` (config DATA_STORE_TAGS, e.g. Vanta's data classification) on the bucket
+    - An Errors alarm on the stack's Lambda (the owner.txt custom resource), emailing
+      `alarm_topic`: the pipeline's, imported from it. The pipeline imports nothing from here,
+      so bucket stacks still come and go freely
 
     Its Synapse project (config/synapse/{env}.yaml) is set up from this stack's outputs by
     tools/setup_synapse_projects.py, which CI runs after every deploy: never create it by hand,
@@ -33,6 +40,9 @@ class SynapseBucketStack(cdk.Stack):
         bucket_config: dict,
         synapse_aws_account_id: str,
         synapse_service_account_id: str,
+        data_store_tags: dict | None = None,
+        alarm_topic: sns.ITopic | None = None,
+        lambda_errors_per_5_minutes: int = 1,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -62,6 +72,8 @@ class SynapseBucketStack(cdk.Stack):
                 )
             ],
         )
+        for key, value in (data_store_tags or {}).items():
+            cdk.Tags.of(self.bucket).add(key, value)
 
         # Every S3 event goes to EventBridge, where the pipeline's rule picks out sidecars. Set on
         # the CloudFormation resource: `event_bridge_enabled=True` would add a custom-resource
@@ -148,6 +160,9 @@ class SynapseBucketStack(cdk.Stack):
         )
         # The policy must exist first: with enforce_ssl the bucket policy is created anyway
         owner_file.node.add_dependency(self.bucket.policy)
+
+        # Last, so every Lambda in the stack is covered (Vanta)
+        lambda_error_alarms(self, lambda_errors_per_5_minutes, alarm_topic)
 
         cdk.CfnOutput(self, "BucketName", value=self.bucket.bucket_name)
         cdk.CfnOutput(self, "BucketArn", value=self.bucket.bucket_arn)
