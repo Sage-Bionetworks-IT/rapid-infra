@@ -79,6 +79,7 @@ class FakeStorageLocation:
             storage_type,
             bucket,
         )
+        self.sts_enabled = None
 
     def get(self, *, synapse_client):
         w = client(synapse_client)
@@ -86,6 +87,7 @@ class FakeStorageLocation:
             raise _http_error(403)
         loc = w.locations[self.storage_location_id]
         self.storage_type, self.bucket = loc["type"], loc["bucket"]
+        self.sts_enabled = loc.get("sts")
         return self
 
 
@@ -200,10 +202,11 @@ def _index(syn, s3, key="batch1/sub/data.csv"):
     )
 
 
-def _add_location(syn, location_id, bucket, mine=True, storage_type=None):
+def _add_location(syn, location_id, bucket, mine=True, storage_type=None, sts=False):
     syn.locations[location_id] = {
         "bucket": bucket,
         "type": storage_type or StorageLocationType.EXTERNAL_S3,
+        "sts": sts,
     }
     if mine:
         syn.readable.add(location_id)
@@ -343,6 +346,14 @@ def test_resolve_storage_location_matches_bucket(syn):
     _add_location(syn, 1, None, mine=False)  # Synapse default storage: not readable (403)
     _add_location(syn, 7, "other")
     _add_location(syn, 8, "provider-a", storage_type=StorageLocationType.EXTERNAL_GOOGLE_CLOUD)
+    _add_location(syn, 9, "provider-a")
+    assert indexer.resolve_storage_location(syn, "syn1", "provider-a") == 9
+
+
+def test_resolve_storage_location_ignores_sts_locations(syn):
+    # The shim folder's STS location is for contributors' credentials, not the index
+    syn.upload_locations = [8, 9]
+    _add_location(syn, 8, "provider-a", sts=True)
     _add_location(syn, 9, "provider-a")
     assert indexer.resolve_storage_location(syn, "syn1", "provider-a") == 9
 
