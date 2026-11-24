@@ -14,5 +14,7 @@ projects:
     # anyone not in it (shared by hand, public access) is removed, except the service account.
     # Optional; none means only the service account has access
     acl:
-      - principal_id: 3629180
+      - principal_id: 3629180  # ARPA-H RAPID FDNA mock data admins
+        permission: edit
+      - principal_id: 3453016  # DPE (Sage Bionetworks Data Processing & Engineering)
         permission: edit
