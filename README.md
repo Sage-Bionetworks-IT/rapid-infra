@@ -41,7 +41,7 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 
 | Stack | Purpose |
 |---|---|
-| `rapid-{env}-bucket-{bucket_name}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
+| `rapid-{env}-bucket-{bucket_name}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, EventBridge notifications and `DATA_STORE_TAGS`. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
 | `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
 
 Adding a provider is a config change: a `BUCKETS` entry in `config/aws/{env}.yaml` and its
@@ -90,6 +90,37 @@ The job summary lists each project's ID, bucket, upload location and STS folder;
 has each project's `contribute.py` command for its provider. A project that fails (say,
 its bucket stack is missing from the outputs) does not stop the others; fix it and use "Re-run
 failed jobs".
+
+### Alarms
+
+Every alarm emails `ALARM_EMAIL` (set in config; confirm the SNS subscription email once).
+
+| Alarm | Emails when | Vanta test it satisfies |
+|---|---|---|
+| Failed sync | A sync execution fails, times out or is aborted | – |
+| Sidecar DLQ: message count | EventBridge couldn't start a sync, so the event went to the DLQ | – |
+| Sidecar DLQ: message age | That event is still in the DLQ an hour later | Messaging queue message age monitored |
+| Lambda `Errors` (one per function) | A function errors (threshold: `LAMBDA_ERROR_ALARMS.errors_per_5_minutes`, default 1 in 5 minutes). Emails again when it recovers | Serverless function error rate monitored (AWS) |
+
+Things to know when changing them:
+
+- **Lambda alarms are automatic.** `LambdaErrorAlarms` (`src/alarms.py`, applied in `app.py`)
+  adds one to every Lambda function in every stack, including functions CDK creates for you. A
+  new function needs no code change.
+- **A threshold of 1 is noisy on purpose.** A Sync error emails even if Step Functions retries
+  it and the retry succeeds.
+- **New SQS queue? Add an age alarm.** Call `dlq_age_alarm()` (`src/alarms.py`). Vanta wants
+  every queue to have an `ApproximateAgeOfOldestMessage` alarm at 5000 s or less.
+- **Don't add a `label` to an alarm's metric.** CDK then writes it as a math alarm, and Vanta
+  doesn't recognize it.
+- The SNS topic lives in the pipeline stack. Bucket stacks import it, but the pipeline doesn't
+  depend on them, so bucket stacks can still be added and removed freely.
+
+### Data classification tags
+
+`DATA_STORE_TAGS` (`config/aws/base.yaml`) are added to each provider bucket, and nothing else.
+Vanta reads them to know the bucket holds user data. S3 tag values may only use letters, digits,
+spaces and `+ - = . _ : / @`.
 
 ## Configuration
 

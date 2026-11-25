@@ -2,6 +2,7 @@ import os
 
 import aws_cdk as cdk
 
+from src.alarms import LambdaErrorAlarms
 from src.synapse_bucket_stack import SynapseBucketStack
 from src.sync_pipeline_stack import SyncPipelineStack
 from src.synapse_template import load_template, project_names
@@ -32,13 +33,15 @@ for bucket in buckets:
         bucket_config=bucket,
         synapse_aws_account_id=config["SYNAPSE"]["aws_account_id"],
         synapse_service_account_id=config["SYNAPSE"]["service_account_id"],
+        data_store_tags=config.get("DATA_STORE_TAGS"),
         env=env,
     )
 
 # One pipeline for all buckets. It refers to them by name (from config), not by cross-stack
 # reference, so bucket stacks come and go without export/import ordering.
+alarm_topic = None
 if buckets:
-    SyncPipelineStack(
+    pipeline_stack = SyncPipelineStack(
         scope=cdk_app,
         construct_id=f"{STACK_NAME_PREFIX}-pipeline",
         buckets=buckets,
@@ -47,5 +50,18 @@ if buckets:
         alarm_email=config.get("ALARM_EMAIL") or "",
         env=env,
     )
+    alarm_topic = pipeline_stack.alarm_topic
+
+# Add an Errors alarm to every Lambda function in every stack (required by Vanta).
+# The alarms email the pipeline's SNS topic. Bucket stacks import that topic, but the pipeline
+# doesn't depend on them, so bucket stacks can still be deleted freely.
+cdk.Aspects.of(cdk_app).add(
+    LambdaErrorAlarms(
+        errors_per_5_minutes=(config.get("LAMBDA_ERROR_ALARMS") or {}).get(
+            "errors_per_5_minutes", 1
+        ),
+        alarm_topic=alarm_topic,
+    )
+)
 
 cdk_app.synth()
