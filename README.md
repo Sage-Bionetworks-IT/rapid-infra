@@ -10,7 +10,8 @@ provider's Synapse project, as Synapse files that point at the S3 objects (no da
 
 Providers upload with **read-write STS credentials** that Synapse issues from an empty `sts`
 "shim" folder in their project ([Synapse STS](https://docs.synapse.org/synapse-docs/compute-directly-on-data-in-synapse-or-s3)),
-so they need a Synapse account with edit access to it, not AWS credentials.
+so they need a Synapse account with edit and delete access to it (Synapse requires DELETE for
+read-write STS credentials), not AWS credentials.
 `tools/contribute.py` does the whole contribution in one command.
 
 ```
@@ -76,7 +77,8 @@ as the service account (the bucket stack's `SynapseServiceAccountId` output):
    storage). Synapse checks the bucket's `owner.txt` for the service account, which is why this
    runs after the deploy.
 3. Creates the empty STS "shim" folder (`sts_folder`, default `sts`), with an STS location on the
-   whole bucket: contributors with edit access on it get read-write STS credentials to upload.
+   whole bucket: contributors with edit and delete access on it get read-write STS credentials to
+   upload.
 4. Makes the project's sharing settings match its `acl`, the way CloudFormation makes a stack
    match its template: each team or user in it gets exactly that permission level (`view`,
    `download`, `edit`, `edit_delete` or `admin`, as in Synapse's sharing dialog), and anyone else
@@ -275,7 +277,8 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
    (`config/synapse/{env}.yaml`), with a name not used anywhere in Synapse, and merge; CI deploys
    the bucket stack, then sets up its Synapse project, including the empty `sts` shim folder.
 2. Share the project with the provider only (until `apply_project_template()` does it): edit
-   access, or at least edit access to its `sts` folder.
+   `edit_delete` access, or at least edit and delete access to its `sts` folder (Synapse refuses
+   read-write STS credentials without DELETE).
 3. Send the provider the `contribute.py` command the setup job prints in its log, with the
    `sts` folder's ID (also in the job summary).
 

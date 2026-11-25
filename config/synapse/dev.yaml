@@ -17,4 +17,5 @@ projects:
       - principal_id: 3629180  # ARPA-H RAPID FDNA mock data admins
         permission: edit
       - principal_id: 3453016  # DPE (Sage Bionetworks Data Processing & Engineering)
-        permission: edit
+        # edit_delete: Synapse only issues read-write STS credentials with DELETE access
+        permission: edit_delete
