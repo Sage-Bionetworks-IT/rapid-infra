@@ -212,10 +212,10 @@ def test_non_empty_sts_folder_is_a_setup_error(syn):
         setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
 
 
-def test_logs_the_contribute_command_for_the_provider(syn, caplog):
+def test_logs_the_sts_folder_for_the_provider(syn, caplog):
     caplog.set_level(logging.INFO)
     result = setup.setup_project(syn, SERVICE_ACCOUNT, PROJECT, BUCKET)
-    assert f"tools/contribute.py --sts-folder {result['sts_folder_id']}" in caplog.text
+    assert f"STS folder {result['sts_folder_id']}" in caplog.text
     assert "s3://rapid-test-a/<s3-folder>/" in caplog.text
 
 

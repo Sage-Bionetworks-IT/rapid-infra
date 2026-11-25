@@ -12,7 +12,7 @@ Providers upload with **read-write STS credentials** that Synapse issues from an
 "shim" folder in their project ([Synapse STS](https://docs.synapse.org/synapse-docs/compute-directly-on-data-in-synapse-or-s3)),
 so they need a Synapse account with edit and delete access to it (Synapse requires DELETE for
 read-write STS credentials), not AWS credentials.
-`tools/contribute.py` does the whole contribution in one command.
+`tools/contribute.py` contributes a mock FHIR dataset this way, as an example.
 
 ```
 provider (contribute.py, STS credentials from <project>/sts)
@@ -89,7 +89,7 @@ as the service account (the bucket stack's `SynapseServiceAccountId` output):
    along the lines of [htan2_project_setup](https://github.com/ncihtan/htan2_project_setup).
 
 The job summary lists each project's ID, bucket, upload location and STS folder; the log also
-has each project's `contribute.py` command for its provider. A project that fails (say,
+has each project's STS folder ID to send its provider. A project that fails (say,
 its bucket stack is missing from the outputs) does not stop the others; fix it and use "Re-run
 failed jobs".
 
@@ -138,14 +138,15 @@ not ownership of the bucket.
 ```console
 pip install synapseclient boto3
 export SYNAPSE_AUTH_TOKEN=<personal access token>     # or ~/.synapseConfig
-python tools/contribute.py --sts-folder <sts folder synID> ./my-batch data/my-batch
+python tools/contribute.py
 ```
 
-This uploads every file under `./my-batch` to `s3://<bucket>/data/my-batch/…` and then writes
-`data/my-batch/sidecar.json`, only if every upload succeeded. The files appear in the project at
-`data/my-batch/…`. `--dry-run` lists what it would do.
+This downloads the mock FHIR dataset from Synapse and uploads it to
+`s3://<bucket>/<synapse username>/<timestamp>/…` with STS credentials from `STS_FOLDER_ID` (the
+dev project's `sts` folder; change it for another project), then uploads its `sidecar.json`
+last. The files appear in the project at `<synapse username>/<timestamp>/…`.
 
-To upload with other tools, get the credentials yourself
+To upload your own files, get the credentials yourself
 (`Folder(id=<sts>).get_sts_storage_token(permission="read_write", output_format="shell")`) and
 note:
 
@@ -276,11 +277,11 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 1. Add the `BUCKETS` entry (`config/aws/{env}.yaml`) and its project
    (`config/synapse/{env}.yaml`), with a name not used anywhere in Synapse, and merge; CI deploys
    the bucket stack, then sets up its Synapse project, including the empty `sts` shim folder.
-2. Share the project with the provider only (until `apply_project_template()` does it): edit
+2. Share the project with the provider only (until `apply_project_template()` does it):
    `edit_delete` access, or at least edit and delete access to its `sts` folder (Synapse refuses
    read-write STS credentials without DELETE).
-3. Send the provider the `contribute.py` command the setup job prints in its log, with the
-   `sts` folder's ID (also in the job summary).
+3. Send the provider the `sts` folder's ID, which the setup job prints in its log and job
+   summary.
 
 The pipeline never creates a project or storage location: each execution's `ResolveStorage`
 step looks up the bucket's project by name and its non-STS storage location on the bucket. If
