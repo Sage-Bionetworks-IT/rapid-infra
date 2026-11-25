@@ -16,7 +16,8 @@ idempotently, as the sync service account:
    live, set as the project's ONLY upload location (replacing any other, including Synapse's
    default storage). Synapse checks the bucket's owner.txt lists the service account.
 3. The STS "shim" folder (the project's sts_folder, default "sts"): empty, with an STS location
-   on the whole bucket, from which contributors with edit access get read-write STS credentials.
+   on the whole bucket, from which contributors with edit and delete access get read-write STS
+   credentials.
    Logs the contribute.py command to send the provider.
 4. Its sharing settings, made to match the project's acl, as CloudFormation does a stack's
    resources: each principal in it gets exactly its permission level, and every other principal
@@ -183,7 +184,7 @@ def setup_project(syn, current_user: str, project: dict, bucket: dict) -> dict:
 
 def _contributor_help(sts_folder_id: str, bucket: str) -> str:
     return f"""
-  Send the provider (who needs edit access to {sts_folder_id}):
+  Send the provider (who needs edit and delete access to {sts_folder_id}):
     python tools/contribute.py --sts-folder {sts_folder_id} <local-dir> <s3-folder>
   It uploads <local-dir> to s3://{bucket}/<s3-folder>/ with read-write STS credentials, then
   writes <s3-folder>/sidecar.json, which indexes the folder into the project at <s3-folder>/.

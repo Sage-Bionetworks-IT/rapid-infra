@@ -4,8 +4,8 @@ Contribute a folder of files to a RAPID provider bucket, the way the sync pipeli
     python contribute.py --sts-folder syn123 ./my-batch data/my-batch
 
 1. Gets read-write STS credentials for the bucket from the provider project's STS folder
-   (Synapse issues them to anyone with edit access to it; they last 12 hours and are refreshed
-   here when under REFRESH_SECONDS remain)
+   (Synapse issues them to anyone with edit and delete access to it; they last 12 hours and are
+   refreshed here when under REFRESH_SECONDS remain)
 2. Uploads every file under ./my-batch to s3://<bucket>/data/my-batch/<relative path>, with
    the bucket-owner-full-control ACL that Synapse's STS credentials require on every write
 3. Only when every upload succeeded, writes data/my-batch/sidecar.json, which triggers the
