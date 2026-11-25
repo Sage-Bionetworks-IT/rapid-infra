@@ -301,9 +301,10 @@ class SyncPipelineStack(cdk.Stack):
         )
 
         # -------------------
-        # Alarms: an email per failed execution, and one if EventBridge can't start any (and
-        # again if that event is still in the DLQ an hour later). Every Lambda's Errors alarm,
-        # in any stack, emails this topic too (app.py, LambdaErrorAlarms).
+        # Alarms. All email this topic:
+        # - each failed sync execution
+        # - EventBridge couldn't start a sync (event in the DLQ); again if still there after 1 hour
+        # - any Lambda error, in any stack (added in app.py by LambdaErrorAlarms)
         # -------------------
         self.alarm_topic = sns.Topic(self, "AlarmTopic", enforce_ssl=True)
         if alarm_email:

@@ -35,7 +35,7 @@ def bucket_template(app):
         synapse_service_account_id="1234567",
         data_store_tags={"DataClass": "internal"},
     )
-    # As in app.py: the Lambda alarms are app-wide, on a topic in another stack (the pipeline's)
+    # Same as app.py: Lambda alarms are added app-wide and email a topic in another stack
     topic = sns.Topic(cdk.Stack(app, "test-topic"), "AlarmTopic")
     cdk.Aspects.of(app).add(LambdaErrorAlarms(alarm_topic=topic))
     return Template.from_stack(stack)
@@ -229,7 +229,7 @@ def _alarms(template, metric_name):
 
 
 def _assert_plain_lambda_errors_alarm(props, function_logical_id):
-    # Vanta reads the top-level MetricName and the FunctionName dimension (no Metrics form)
+    # Vanta only recognizes plain alarms (top-level MetricName + FunctionName), not math alarms
     assert "Metrics" not in props
     assert props["Namespace"] == "AWS/Lambda"
     assert props["Statistic"] == "Sum"
@@ -255,7 +255,7 @@ def test_data_store_tags_only_on_the_bucket(bucket_template):
 
 
 def test_bucket_lambda_has_errors_alarm_on_the_pipeline_topic(bucket_template):
-    # Vanta "Serverless function error rate monitored": the owner.txt custom resource's Lambda
+    # The only Lambda here is CDK's, behind the custom resource that writes owner.txt
     (function_id,) = bucket_template.find_resources("AWS::Lambda::Function")
     (props,) = _alarms(bucket_template, "Errors").values()
     _assert_plain_lambda_errors_alarm(props, function_id)
@@ -279,7 +279,7 @@ def test_every_pipeline_lambda_has_errors_alarm(pipeline_template):
 
 
 def test_rule_dlq_age_alarm(pipeline_template):
-    # Vanta "Messaging queue message age monitored": every queue, at most 5000 s
+    # Vanta requires an age alarm on every queue, at 5000 s or less
     (props,) = _alarms(pipeline_template, "ApproximateAgeOfOldestMessage").values()
     assert props["Dimensions"][0]["Name"] == "QueueName"
     assert "SidecarRuleDLQ" in json.dumps(props["Dimensions"])

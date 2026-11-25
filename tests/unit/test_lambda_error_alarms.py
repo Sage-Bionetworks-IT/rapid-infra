@@ -1,4 +1,4 @@
-"""The real app.py: every Lambda in every stack gets an Errors alarm that emails (Vanta)."""
+"""Synth the real app.py and check every Lambda in every stack has an Errors alarm that emails."""
 
 import json
 import runpy
@@ -45,6 +45,6 @@ def test_every_lambda_in_the_app_has_an_errors_alarm_that_emails(env, tmp_path, 
             assert alarm["MetricName"] == "Errors", name
             assert alarm["AlarmActions"] and alarm["OKActions"], name
         functions_seen += len(functions)
-    # An env with buckets has the pipeline's Lambdas and each bucket stack's custom resource
+    # Guard against a vacuous pass: 3 pipeline Lambdas plus at least 1 per bucket stack
     if templates:
         assert functions_seen >= 4

@@ -20,7 +20,7 @@ class SynapseBucketStack(cdk.Stack):
       location on the bucket (always including the sync service account)
     - CORS for browser uploads from synapse.org
     - The bucket is retained when the stack is deleted
-    - `data_store_tags` (config DATA_STORE_TAGS, e.g. Vanta's data classification) on the bucket
+    - `data_store_tags` (config DATA_STORE_TAGS) on the bucket, e.g. Vanta's data classification
 
     Its Synapse project (config/synapse/{env}.yaml) is set up from this stack's outputs by
     tools/setup_synapse_projects.py, which CI runs after every deploy: never create it by hand,

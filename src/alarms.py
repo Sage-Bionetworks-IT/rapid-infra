@@ -1,7 +1,7 @@
-"""CloudWatch alarms that Vanta's AWS tests look for, for the bucket and pipeline stacks.
+"""CloudWatch alarms required by Vanta's AWS tests.
 
-Vanta reads an alarm's top-level `MetricName` and dimensions, so these metrics have no `label`:
-a labelled metric makes CDK write the alarm in the `Metrics` (math) form, which doesn't count.
+Don't add a `label` to these metrics: CDK then writes a math alarm, which Vanta doesn't
+recognize (it only checks the alarm's top-level `MetricName` and dimensions).
 """
 
 import re
@@ -16,9 +16,8 @@ from constructs import Construct, IConstruct
 
 FIVE_MINUTES = cdk.Duration.minutes(5)
 
-# A DLQ message nobody has redriven or purged for an hour. The DLQ's count alarm emails when it
-# lands; this emails once more if it is still there. Vanta's "Messaging queue message age
-# monitored" test wants an ApproximateAgeOfOldestMessage alarm on every queue, at most 5000 s
+# Email if a DLQ message is still there after an hour (nobody redrove or purged it).
+# Vanta requires an age alarm on every queue, at 5000 s or less.
 DLQ_UNHANDLED_SECONDS = 3600
 
 
@@ -29,6 +28,7 @@ def dlq_age_alarm(
     what: str,
     alarm_topic: sns.ITopic | None,
 ) -> cw.Alarm:
+    """Alarm when `dlq`'s oldest message is an hour old. Use one for every new queue (Vanta)."""
     alarm = cw.Alarm(
         scope,
         construct_id,
@@ -46,12 +46,16 @@ def dlq_age_alarm(
     return alarm
 
 
-# CDK's singleton functions, named by a fixed UUID: the AwsCustomResource provider
+# Lambda functions CDK creates itself have a UUID in their ID. Map it to a readable name.
 _SINGLETONS = {"AWS679f53fac002430cb0da5b7982bd2287": "AwsCustomResource"}
 
 
 def _readable_name(stack: cdk.Stack, path: str) -> str:
-    """`rapid-dev-bucket-example-AwsCustomResource`: no CDK singleton hash, no `::` or `/`."""
+    """Turn a construct path into an alarm name, e.g. `rapid-dev-bucket-example-AwsCustomResource`.
+
+    Replaces known CDK UUIDs with names, drops other 32-character hashes, and turns any other
+    non-alphanumeric run (`/`, `::`) into `-`.
+    """
     for uuid, name in _SINGLETONS.items():
         path = path.replace(uuid, name)
     path = re.sub(r"[0-9a-f]{32}(?=/|$)", "", path)
@@ -60,13 +64,14 @@ def _readable_name(stack: cdk.Stack, path: str) -> str:
 
 @jsii.implements(cdk.IAspect)
 class LambdaErrorAlarms:
-    """An `Errors` alarm on every `AWS::Lambda::Function` in the app, each in its function's stack.
+    """Add an `Errors` alarm to every Lambda function in the app.
 
-    Vanta's "Serverless function error rate monitored (AWS)" test passes a function when an alarm
-    watches `AWS/Lambda` `Errors` with its `FunctionName`. Every function counts, CDK's own
-    (e.g. the AwsCustomResource provider) included. Applied once to the app (app.py), this runs
-    at synth, after every stack is built: a function added anywhere, in any stack, gets an alarm
-    with no code change. Alarm and OK transitions both email `alarm_topic`.
+    Required by Vanta ("Serverless function error rate monitored (AWS)"), which checks every
+    function, including the ones CDK creates for you.
+
+    It's a CDK Aspect: applied once in app.py, it runs at synth after all stacks are built, so new
+    functions get an alarm automatically. Each alarm goes in its function's stack and emails
+    `alarm_topic` when it fires and again when it recovers.
     """
 
     def __init__(self, errors_per_5_minutes: int = 1, alarm_topic: sns.ITopic | None = None):

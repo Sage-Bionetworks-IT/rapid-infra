@@ -8,8 +8,8 @@ PROJECT_NAME: rapid
 TAGS:
   CostCenter: RAPID - ARPA-H - BP01 / 126500
 
-# Extra tags for the provider buckets only (the stores of contributed data), e.g. the data
-# classification Vanta reads. S3 tag values allow letters, digits, spaces and + - = . _ : / @
+# Tags added to the provider buckets only (where contributed data is stored). Vanta reads
+# these to classify the data. S3 tag values may only use letters, digits, spaces and + - = . _ : / @
 DATA_STORE_TAGS:
   VantaContainsUserData: "true"
   VantaUserDataStored: Data provider contributions that can contain controlled access data
@@ -34,12 +34,12 @@ SYNC:
   # Days the per-run result files are kept in the results bucket
   results_retention_days: 90
 
-# Alarm emails (failed sync executions, the sidecar DLQ, Lambda errors). Confirm the SNS
-# subscription once. Empty: no email.
+# Where alarms are emailed (failed syncs, the sidecar DLQ, Lambda errors). Confirm the SNS
+# subscription email once. Leave empty for no email.
 ALARM_EMAIL: ""
 
-# An Errors alarm on every Lambda function the app deploys, emailing ALARM_EMAIL (Vanta:
-# "Serverless function error rate monitored (AWS)"). Fires at this many errors in 5 minutes
+# Every Lambda function gets an Errors alarm (required by Vanta). It emails ALARM_EMAIL
+# when a function has at least this many errors in 5 minutes.
 LAMBDA_ERROR_ALARMS:
   errors_per_5_minutes: 1
 

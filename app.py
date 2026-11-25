@@ -52,9 +52,9 @@ if buckets:
     )
     alarm_topic = pipeline_stack.alarm_topic
 
-# An Errors alarm on every Lambda in every stack, CDK's own included, added at synth (Vanta).
-# The bucket stacks' alarms import the pipeline's topic; deleting an importing stack is always
-# allowed, and the pipeline imports nothing from them.
+# Add an Errors alarm to every Lambda function in every stack (required by Vanta).
+# The alarms email the pipeline's SNS topic. Bucket stacks import that topic, but the pipeline
+# doesn't depend on them, so bucket stacks can still be deleted freely.
 cdk.Aspects.of(cdk_app).add(
     LambdaErrorAlarms(
         errors_per_5_minutes=(config.get("LAMBDA_ERROR_ALARMS") or {}).get(

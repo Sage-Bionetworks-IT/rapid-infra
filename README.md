@@ -81,24 +81,36 @@ The job summary lists each project's ID, bucket and upload location. A project t
 its bucket stack is missing from the outputs) does not stop the others; fix it and use "Re-run
 failed jobs".
 
-### Alarms (and Vanta)
+### Alarms
 
-Every alarm emails `ALARM_EMAIL` through the pipeline's SNS topic. The bucket stacks import it
-from the pipeline; the pipeline imports nothing from them, so bucket stacks still come and go.
-Some exist for Vanta's AWS tests, which read an alarm's top-level `MetricName` and dimensions
-(so an alarm's metric must have no `label`, which would make it a math alarm):
+Every alarm emails `ALARM_EMAIL` (set in config; confirm the SNS subscription email once).
 
-- An `Errors` alarm on every Lambda function in every stack, CDK's own included: the
-  `LambdaErrorAlarms` CDK Aspect (`src/alarms.py`), applied once to the app in `app.py`, adds
-  them at synth, so a new function or stack needs no code change. It fires at
-  `LAMBDA_ERROR_ALARMS.errors_per_5_minutes` (1), so a Sync error that Step Functions retries
-  successfully can still email, and emails again when the function recovers. Vanta:
-  "Serverless function error rate monitored (AWS)"
-- The sidecar rule's DLQ: one alarm when a message lands, another if it is still there an hour
-  later. A new queue needs an `ApproximateAgeOfOldestMessage` alarm too (`dlq_age_alarm`, at
-  most 5000 s). Vanta: "Messaging queue message age monitored"
-- `DATA_STORE_TAGS` (`VantaContainsUserData`, `VantaUserDataStored`) classify the provider
-  buckets. S3 tag values allow only letters, digits, spaces and `+ - = . _ : / @`
+| Alarm | Emails when | Vanta test it satisfies |
+|---|---|---|
+| Failed sync | A sync execution fails, times out or is aborted | – |
+| Sidecar DLQ: message count | EventBridge couldn't start a sync, so the event went to the DLQ | – |
+| Sidecar DLQ: message age | That event is still in the DLQ an hour later | Messaging queue message age monitored |
+| Lambda `Errors` (one per function) | A function errors (threshold: `LAMBDA_ERROR_ALARMS.errors_per_5_minutes`, default 1 in 5 minutes). Emails again when it recovers | Serverless function error rate monitored (AWS) |
+
+Things to know when changing them:
+
+- **Lambda alarms are automatic.** `LambdaErrorAlarms` (`src/alarms.py`, applied in `app.py`)
+  adds one to every Lambda function in every stack, including functions CDK creates for you. A
+  new function needs no code change.
+- **A threshold of 1 is noisy on purpose.** A Sync error emails even if Step Functions retries
+  it and the retry succeeds.
+- **New SQS queue? Add an age alarm.** Call `dlq_age_alarm()` (`src/alarms.py`). Vanta wants
+  every queue to have an `ApproximateAgeOfOldestMessage` alarm at 5000 s or less.
+- **Don't add a `label` to an alarm's metric.** CDK then writes it as a math alarm, and Vanta
+  doesn't recognize it.
+- The SNS topic lives in the pipeline stack. Bucket stacks import it, but the pipeline doesn't
+  depend on them, so bucket stacks can still be added and removed freely.
+
+### Data classification tags
+
+`DATA_STORE_TAGS` (`config/aws/base.yaml`) are added to each provider bucket, and nothing else.
+Vanta reads them to know the bucket holds user data. S3 tag values may only use letters, digits,
+spaces and `+ - = . _ : / @`.
 
 ## Configuration
 
