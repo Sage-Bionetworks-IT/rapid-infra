@@ -158,3 +158,60 @@ def test_missing_bucket_field_rejected():
     del config["BUCKETS"][0]["bucket_name"]
     with pytest.raises(ValueError, match=r"BUCKETS\[0\].bucket_name is required"):
         validate_config(config)
+
+
+NEPTUNE = {
+    "VPC_CIDR": "10.254.176.0/24",
+    "NEPTUNE": {
+        "enabled": True,
+        "engine_version": "1.3.2.1",
+        "serverless_min_capacity": 1.0,
+        "serverless_max_capacity": 4.0,
+        "instance_count": 1,
+        "backup_retention_days": 7,
+        "preferred_backup_window": "03:00-04:00",
+        "preferred_maintenance_window": "sun:04:00-sun:05:00",
+        "deletion_protection": False,
+        "cluster_parameters": {"neptune_enable_audit_log": 1},
+    },
+}
+
+
+def _with_neptune(**changes):
+    config = {**copy.deepcopy(VALID), **copy.deepcopy(NEPTUNE)}
+    for key, value in changes.items():
+        if key == "VPC_CIDR":
+            config[key] = value
+        elif value is None:
+            del config["NEPTUNE"][key]
+        else:
+            config["NEPTUNE"][key] = value
+    return config
+
+
+def test_valid_neptune_config_passes():
+    validate_config(_with_neptune())
+
+
+def test_disabled_neptune_is_not_validated():
+    validate_config(_with_neptune(enabled=False, VPC_CIDR="not a cidr", engine_version=None))
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"VPC_CIDR": None}, "VPC_CIDR must be an IPv4 network"),
+        ({"VPC_CIDR": "10.254.176.1/24"}, "VPC_CIDR must be an IPv4 network"),  # host bits set
+        ({"VPC_CIDR": "8.8.8.0/24"}, "private range"),
+        ({"engine_version": None}, "NEPTUNE.engine_version is required"),
+        ({"engine_version": "1.3"}, "must look like 1.3.2.1"),
+        ({"serverless_min_capacity": 0.5}, "1 to 128 NCU"),
+        ({"serverless_min_capacity": 8.0}, "min no more than max"),
+        ({"serverless_max_capacity": 256}, "1 to 128 NCU"),
+        ({"instance_count": 0}, "instance_count must be 1 to 16"),
+        ({"cluster_parameters": ["neptune_enable_audit_log"]}, "must be a mapping"),
+    ],
+)
+def test_invalid_neptune_config_rejected(changes, message):
+    with pytest.raises(ValueError, match=message):
+        validate_config(_with_neptune(**changes))
