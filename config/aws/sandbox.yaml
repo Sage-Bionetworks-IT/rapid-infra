@@ -35,3 +35,13 @@ BUCKETS:
     deny_delete_arns: []
     # Optional, default false
     versioned: false
+
+# The graph's VPC (rapid-sandbox-network)
+VPC_CIDR: 10.254.178.0/24
+
+NEPTUNE:
+  # Off, so testing the buckets here doesn't create a graph (about $150/month while deployed).
+  # Set true to try the graph stacks before dev
+  enabled: false
+  serverless_max_capacity: 2.0
+  deletion_protection: false

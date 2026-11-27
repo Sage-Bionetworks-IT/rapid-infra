@@ -27,3 +27,10 @@ BUCKETS:
     deny_delete_arns: []
     # Optional, default false
     versioned: false
+
+# The graph's VPC (rapid-dev-network)
+VPC_CIDR: 10.254.176.0/24
+
+NEPTUNE:
+  serverless_max_capacity: 4.0
+  deletion_protection: false  # allow easier cleanup in dev

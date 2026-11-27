@@ -6,3 +6,6 @@ SYNAPSE:
   service_account_id: "3631549"  # rapid-prod-infra-service
 
 ALARM_EMAIL: "aws-rapid-prod@sagebase.org"
+
+# The graph's VPC (rapid-prod-network). The graph itself is config/aws/base.yaml's NEPTUNE.
+VPC_CIDR: 10.254.177.0/24

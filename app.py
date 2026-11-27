@@ -2,6 +2,8 @@ import os
 
 import aws_cdk as cdk
 
+from src.neptune_stack import NeptuneStack
+from src.network_stack import NetworkStack
 from src.synapse_bucket_stack import SynapseBucketStack
 from src.sync_pipeline_stack import SyncPipelineStack
 from src.synapse_template import load_template, project_names
@@ -45,6 +47,23 @@ if buckets:
         project_names=project_names(load_template(f"config/synapse/{env_name}.yaml"), buckets),
         sync_config=config["SYNC"],
         alarm_email=config.get("ALARM_EMAIL") or "",
+        env=env,
+    )
+
+# The graph database (as in sagebrain-infra): a Neptune cluster in its own VPC
+if (config.get("NEPTUNE") or {}).get("enabled"):
+    network_stack = NetworkStack(
+        scope=cdk_app,
+        construct_id=f"{STACK_NAME_PREFIX}-network",
+        vpc_cidr=config["VPC_CIDR"],
+        env=env,
+    )
+    NeptuneStack(
+        scope=cdk_app,
+        construct_id=f"{STACK_NAME_PREFIX}-neptune",
+        vpc=network_stack.vpc,
+        neptune_config=config["NEPTUNE"],
+        data_store_tags=config.get("DATA_STORE_TAGS"),
         env=env,
     )
 

@@ -3,6 +3,8 @@ import json
 import pytest
 from aws_cdk.assertions import Match, Template
 
+from src.neptune_stack import NeptuneStack
+from src.network_stack import NetworkStack
 from src.synapse_template import load_template, project_names
 from src.synapse_bucket_stack import SynapseBucketStack
 from src.sync_pipeline_stack import SyncPipelineStack
@@ -233,4 +235,15 @@ def test_repo_configs_synthesize(app, env):
             ),
             sync_config=config["SYNC"],
         )
+    if config["NEPTUNE"]["enabled"]:
+        network = NetworkStack(app, "network", vpc_cidr=config["VPC_CIDR"])
+        NeptuneStack(app, "neptune", vpc=network.vpc, neptune_config=config["NEPTUNE"])
     app.synth()
+
+
+def test_graph_is_on_in_dev_and_prod_not_sandbox():
+    # sandbox is for testing the buckets; a graph there costs money while deployed
+    assert load_context_config("dev")["NEPTUNE"]["enabled"]
+    assert load_context_config("prod")["NEPTUNE"]["enabled"]
+    assert not load_context_config("sandbox")["NEPTUNE"]["enabled"]
+    assert load_context_config("prod")["NEPTUNE"]["deletion_protection"]

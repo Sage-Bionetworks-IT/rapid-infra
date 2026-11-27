@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -15,6 +16,18 @@ _BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 _SYNAPSE_PRINCIPAL = re.compile(r"^\d+$")
 
 _BUCKET_LIST_FIELDS = ("synapse_owner_ids", "s3_user_arns", "s3_admin_arns", "deny_delete_arns")
+
+_NEPTUNE_ENGINE_VERSION = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+_NEPTUNE_FIELDS = (
+    "engine_version",
+    "serverless_min_capacity",
+    "serverless_max_capacity",
+    "instance_count",
+    "backup_retention_days",
+    "preferred_backup_window",
+    "preferred_maintenance_window",
+    "deletion_protection",
+)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -113,6 +126,9 @@ def validate_config(config: Dict[str, Any]) -> None:
             )
         seen.add(bucket["bucket_name"])
 
+    if (config.get("NEPTUNE") or {}).get("enabled"):
+        _validate_neptune(config)
+
 
 def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
     if not bucket.get("bucket_name"):
@@ -127,3 +143,36 @@ def _validate_bucket(where: str, bucket: Dict[str, Any]) -> None:
     for owner in bucket.get("synapse_owner_ids", []):
         if not _SYNAPSE_PRINCIPAL.match(str(owner)):
             raise ValueError(f"{where}.synapse_owner_ids: '{owner}' is not a numeric Synapse ID")
+
+
+def _validate_neptune(config: Dict[str, Any]) -> None:
+    cidr = config.get("VPC_CIDR")
+    try:
+        network = ipaddress.IPv4Network(str(cidr))
+    except ValueError:
+        raise ValueError(
+            f"VPC_CIDR must be an IPv4 network such as 10.0.0.0/24, got '{cidr}'"
+        ) from None
+    if not network.is_private:
+        raise ValueError(f"VPC_CIDR must be a private range, got '{cidr}'")
+
+    neptune = config["NEPTUNE"]
+    for field in _NEPTUNE_FIELDS:
+        if field not in neptune:
+            raise ValueError(f"NEPTUNE.{field} is required")
+    if not _NEPTUNE_ENGINE_VERSION.match(str(neptune["engine_version"])):
+        raise ValueError(
+            f"NEPTUNE.engine_version must look like 1.3.2.1, got '{neptune['engine_version']}'"
+        )
+    # https://docs.aws.amazon.com/neptune/latest/userguide/neptune-serverless-capacity-scaling.html
+    low, high = neptune["serverless_min_capacity"], neptune["serverless_max_capacity"]
+    if not 1 <= low <= high <= 128:
+        raise ValueError(
+            "NEPTUNE.serverless_min_capacity and serverless_max_capacity must be 1 to 128 NCU, "
+            f"min no more than max, got {low} and {high}"
+        )
+    # One writer and up to 15 read replicas
+    if not 1 <= neptune["instance_count"] <= 16:
+        raise ValueError(f"NEPTUNE.instance_count must be 1 to 16, got {neptune['instance_count']}")
+    if not isinstance(neptune.get("cluster_parameters") or {}, dict):
+        raise ValueError("NEPTUNE.cluster_parameters must be a mapping")

@@ -44,6 +44,8 @@ before deployment; Sage IT bootstraps every account in the AWS Organization when
 |---|---|
 | `rapid-{env}-bucket-{bucket_name}` | One per `BUCKETS` entry: the provider's bucket, with Synapse's AWS account and the provider's ARNs in its bucket policy, `owner.txt`, CORS, and EventBridge notifications. Retained on stack deletion. Its Synapse project is set up after the deploy (below) |
 | `rapid-{env}-pipeline` | The sidecar rule, state machine, Prepare and Sync Lambdas, Synapse PAT secret, results bucket and alarms. Shared by all buckets |
+| `rapid-{env}-network` | The graph database's VPC (`VPC_CIDR`): 2 AZs, public and private subnets, one NAT gateway, an S3 gateway endpoint. Only with `NEPTUNE.enabled` |
+| `rapid-{env}-neptune` | The graph database (below): a Neptune Serverless cluster, its bulk-load data bucket (retained on stack deletion) and loader role. Only with `NEPTUNE.enabled` (dev and prod; off in sandbox) |
 
 Adding a provider is a config change: a `BUCKETS` entry in `config/aws/{env}.yaml` and its
 project in `config/synapse/{env}.yaml`.
@@ -193,6 +195,44 @@ Minerva/Batch processing or HTAN-specific configuration. It uses synapseclient's
 (`synapseclient.models`), not the client methods deprecated in 4.x; the Synapse Lambdas run with
 `PYTHONWARNINGS=default::DeprecationWarning`, so any new deprecation shows up in their logs. The
 module docstring lists what changed.
+
+## Graph database (Neptune)
+
+A Neptune Serverless cluster, as in
+[sagebrain-infra](https://github.com/Sage-Bionetworks-IT/sagebrain-infra) (`NetworkStack` and
+`NeptuneStack`, with the same construct IDs and output names), in the private subnets of its own
+VPC. Configured by `NEPTUNE` in `config/aws/base.yaml` (each env file lists only what it
+changes) and `VPC_CIDR` in each env's file:
+
+| | dev | prod | sandbox |
+|---|---|---|---|
+| `VPC_CIDR` | `10.254.176.0/24` | `10.254.177.0/24` | `10.254.178.0/24` |
+| Capacity (NCU) | 1 to 4 | 1 to 8 | off (`enabled: false`) |
+| Deletion protection | off | on | off |
+
+- **Access**: IAM authentication only (SigV4-signed requests with `neptune-db:*` on
+  `arn:aws:neptune-db:<region>:<account>:<NeptuneClusterResourceId>/*`), and its security group
+  has no ingress. What queries or loads the graph (a Lambda in the VPC, a bastion) adds its own
+  security group rule on `NeptuneClusterPort`, as sagebrain-infra's consumer stacks do. Nothing
+  here does yet.
+- **Loading**: put the files (Turtle, N-Triples, CSV, ...) in the `NeptuneDataBucketName` bucket
+  and call the cluster's `/loader` API with `"iamRoleArn": "<NeptuneLoadRoleArn>"`; Neptune
+  reads S3 through the VPC's S3 gateway endpoint.
+- **Logs**: the audit and slow-query logs (queries over 5 s) go to CloudWatch
+  (`/aws/neptune/<cluster>/audit`, `.../slowquery`). Unlike sagebrain-infra, the cluster has its
+  own parameter group (`NEPTUNE.cluster_parameters`), since Neptune writes neither log with the
+  default one.
+- **Backups**: 7 days of automated backups, and a final snapshot if the cluster is deleted.
+- **Tags**: `DATA_STORE_TAGS`, when set, go on the data bucket, the cluster and its instances.
+- **Cost**: Serverless does not scale to zero. At the 1 NCU minimum, the cluster is about
+  $120/month and the NAT gateway about $35/month per environment, before storage and I/O.
+
+The endpoints, once deployed:
+
+```console
+aws --profile <profile> cloudformation describe-stacks --stack-name rapid-dev-neptune \
+  --query "Stacks[0].Outputs" --output table
+```
 
 ## Development
 

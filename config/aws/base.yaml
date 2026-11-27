@@ -34,3 +34,26 @@ ALARM_EMAIL: ""
 # Synapse-connected buckets. One stack per entry; see config/aws/dev.yaml for the fields. Each
 # one's Synapse project is in config/synapse/{env}.yaml.
 BUCKETS: []
+
+# The graph database, as in sagebrain-infra: a Neptune Serverless cluster (rapid-{env}-neptune)
+# in its own VPC (rapid-{env}-network, VPC_CIDR in each env's file). enabled: false skips both.
+NEPTUNE:
+  enabled: true
+  # Its cluster parameter group's family follows the major.minor version (1.3.x.x: neptune1.3)
+  engine_version: "1.3.2.1"
+  # Neptune capacity units (NCU, about 2 GiB of memory each), 1 to 128 in steps of 0.5.
+  # Serverless does not scale to zero: the minimum is billed around the clock
+  serverless_min_capacity: 1.0
+  serverless_max_capacity: 8.0
+  # db.serverless instances: the first is the writer, the others read replicas (up to 16)
+  instance_count: 1
+  backup_retention_days: 7
+  preferred_backup_window: "03:00-04:00"  # UTC
+  preferred_maintenance_window: "sun:04:00-sun:05:00"  # UTC
+  deletion_protection: true
+  # The cluster parameter group. Neptune only writes the audit and slow-query logs the cluster
+  # exports to CloudWatch with these on
+  cluster_parameters:
+    neptune_enable_audit_log: 1
+    neptune_enable_slow_query_log: info
+    neptune_slow_query_log_threshold: 5000  # milliseconds
