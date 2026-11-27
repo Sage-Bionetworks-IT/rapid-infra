@@ -1,7 +1,5 @@
-import datetime
 import json
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -9,124 +7,84 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "tools"))
 import contribute  # noqa: E402
 
-NOW = datetime.datetime(2026, 11, 7, 12, 0, tzinfo=datetime.timezone.utc)
-
-
-def _token(hours=12, bucket="provider-a", base_key=None, n=1):
-    token = {
-        "accessKeyId": f"AK{n}",
-        "secretAccessKey": "secret",
-        "sessionToken": "session",
-        "bucket": bucket,
-        "expiration": (NOW + datetime.timedelta(hours=hours)).isoformat().replace("+00:00", "Z"),
-    }
-    if base_key:
-        token["baseKey"] = base_key
-    return token
+TOKEN = {
+    "accessKeyId": "AK",
+    "secretAccessKey": "secret",
+    "sessionToken": "session",
+    "bucket": "provider-a",
+}
 
 
 class FakeS3:
-    def __init__(self, fail_keys=()):
-        self.calls, self.fail_keys = [], set(fail_keys)
-        self.lock = threading.Lock()
+    def __init__(self):
+        self.uploads = []
 
-    def upload_file(self, path, bucket, key, ExtraArgs=None):
-        if key in self.fail_keys:
-            raise RuntimeError("AccessDenied")
-        with self.lock:
-            self.calls.append(("upload", bucket, key, ExtraArgs))
-
-    def put_object(self, **kwargs):
-        with self.lock:
-            self.calls.append(("put", kwargs["Bucket"], kwargs["Key"], {"ACL": kwargs["ACL"]}))
-            self.sidecar = json.loads(kwargs["Body"])
+    def upload_file(self, path, bucket, key, ExtraArgs):
+        self.uploads.append((bucket, key, ExtraArgs))
 
 
-def _credentials(s3, tokens):
-    tokens = iter(tokens)
-    fetches = []
+@pytest.fixture
+def s3(monkeypatch):
+    s3, folders = FakeS3(), []
 
-    def fetch():
-        fetches.append(1)
-        return next(tokens)
+    class FakeFolder:
+        def __init__(self, id):
+            folders.append(id)
 
-    creds = contribute.StsCredentials(fetch, lambda **kw: s3, now=lambda: NOW)
-    return creds, fetches
+        def get_sts_storage_token(self, permission, output_format, synapse_client):
+            assert permission == "read_write"
+            return dict(TOKEN, **getattr(s3, "token_extra", {}))
+
+    monkeypatch.setattr(contribute, "Folder", FakeFolder)
+    monkeypatch.setattr(contribute.boto3, "client", lambda *a, **kw: s3)
+    s3.folders = folders
+    return s3
 
 
 @pytest.fixture
 def batch(tmp_path):
-    root = tmp_path / "batch"
-    (root / "sub").mkdir(parents=True)
-    (root / "a.txt").write_text("a")
-    (root / "sub" / "b.txt").write_text("bb")
-    return root
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "nested" / "b.txt").write_text("b")
+    (tmp_path / "sidecar.json").write_text(json.dumps({"name": "batch"}))
+    return tmp_path
 
 
-def test_plan_mirrors_the_local_tree_under_the_s3_folder(batch):
-    assert [k for _, k in contribute.plan(batch, "/data/batch1/")] == [
+def test_uploads_every_file_then_the_sidecar_last(s3, batch):
+    url = contribute.contribute(None, "syn123", batch, "/data/batch1/")
+    assert s3.folders == ["syn123"]
+    assert [key for _, key, _ in s3.uploads] == [
         "data/batch1/a.txt",
-        "data/batch1/sub/b.txt",
+        "data/batch1/nested/b.txt",
+        "data/batch1/sidecar.json",
     ]
+    assert all(b == "provider-a" and x["ACL"] == contribute.ACL for b, _, x in s3.uploads)
+    assert s3.uploads[-1][2]["ContentType"] == "application/json"
+    assert url == "s3://provider-a/data/batch1/"
 
 
-@pytest.mark.parametrize("folder", ["", "/", "data/../x", "data//x", "./data"])
-def test_plan_rejects_bad_s3_folders(batch, folder):
-    with pytest.raises(ValueError, match="S3 folder"):
-        contribute.plan(batch, folder)
+def test_keys_go_under_the_sts_base_key(s3, batch):
+    s3.token_extra = {"baseKey": "base/"}
+    contribute.contribute(None, "syn123", batch, "data/batch1")
+    assert s3.uploads[-1][1] == "base/data/batch1/sidecar.json"
 
 
-def test_plan_refuses_a_local_sidecar(batch):
-    (batch / "sub" / "sidecar.json").write_text("{}")
-    with pytest.raises(ValueError, match="written by this tool"):
-        contribute.plan(batch, "data/batch1")
+def test_needs_a_sidecar(s3, batch):
+    (batch / "sidecar.json").unlink()
+    with pytest.raises(ValueError, match="no sidecar.json"):
+        contribute.contribute(None, "syn123", batch, "data/batch1")
+    assert s3.folders == [] and s3.uploads == []
 
 
-def test_every_write_has_the_acl_and_the_sidecar_comes_last(batch):
-    s3 = FakeS3()
-    creds, _ = _credentials(s3, [_token()])
-    result = contribute.contribute(creds, contribute.plan(batch, "data/batch1"), "data/batch1")
-
-    assert all(extra == {"ACL": "bucket-owner-full-control"} for *_, extra in s3.calls)
-    assert {c[2] for c in s3.calls[:-1]} == {"data/batch1/a.txt", "data/batch1/sub/b.txt"}
-    assert s3.calls[-1][:3] == ("put", "provider-a", "data/batch1/sidecar.json")
-    assert s3.sidecar["files"] == 2 and s3.sidecar["bytes"] == 3
-    assert result == {
-        "bucket": "provider-a",
-        "files": 2,
-        "bytes": 3,
-        "sidecar": "data/batch1/sidecar.json",
-    }
+def test_sidecar_must_be_a_json_object(s3, batch):
+    (batch / "sidecar.json").write_text("[]")
+    with pytest.raises(ValueError, match="JSON object"):
+        contribute.contribute(None, "syn123", batch, "data/batch1")
+    assert s3.uploads == []
 
 
-def test_no_sidecar_when_an_upload_fails(batch):
-    s3 = FakeS3(fail_keys={"data/batch1/sub/b.txt"})
-    creds, _ = _credentials(s3, [_token()])
-    with pytest.raises(RuntimeError, match="1 of 2 uploads failed; no sidecar written"):
-        contribute.contribute(
-            creds, contribute.plan(batch, "data/batch1"), "data/batch1", log=lambda m: None
-        )
-    assert not any(c[0] == "put" for c in s3.calls)
-
-
-def test_base_key_is_prefixed(batch):
-    s3 = FakeS3()
-    creds, _ = _credentials(s3, [_token(base_key="inbox/")])
-    contribute.contribute(creds, contribute.plan(batch, "data/batch1"), "data/batch1")
-    assert s3.calls[-1][2] == "inbox/data/batch1/sidecar.json"
-
-
-def test_credentials_reused_until_close_to_expiry():
-    s3 = FakeS3()
-    creds, fetches = _credentials(s3, [_token(hours=12), _token(hours=12, n=2)])
-    creds.client()
-    creds.client()
-    assert len(fetches) == 1
-
-
-def test_credentials_refetched_when_expiring():
-    s3 = FakeS3()
-    creds, fetches = _credentials(s3, [_token(hours=0.5), _token(hours=12, n=2)])
-    creds.client()  # first fetch: expires in 30 min, under REFRESH_SECONDS
-    assert creds.token()["accessKeyId"] == "AK2"
-    assert len(fetches) == 2
+@pytest.mark.parametrize("folder", ["", "/"])
+def test_refuses_the_bucket_root(s3, batch, folder):
+    with pytest.raises(ValueError, match="bucket root"):
+        contribute.contribute(None, "syn123", batch, folder)
+    assert s3.uploads == []

@@ -141,9 +141,12 @@ export SYNAPSE_AUTH_TOKEN=<personal access token>     # or ~/.synapseConfig
 python tools/contribute.py --sts-folder <sts folder synID> ./my-batch data/my-batch
 ```
 
-This uploads every file under `./my-batch` to `s3://<bucket>/data/my-batch/…` and then writes
-`data/my-batch/sidecar.json`, only if every upload succeeded. The files appear in the project at
-`data/my-batch/…`. `--dry-run` lists what it would do.
+`./my-batch` needs a `sidecar.json` (any JSON object). This uploads every other file under
+`./my-batch` to `s3://<bucket>/data/my-batch/…`, then the sidecar last, which indexes the
+folder: the files appear in the project at `data/my-batch/…`.
+
+`python tools/contribute_mock_data.py` contributes a mock FHIR dataset to the dev project this
+way, under `<synapse username>/<timestamp>/`.
 
 To upload with other tools, get the credentials yourself
 (`Folder(id=<sts>).get_sts_storage_token(permission="read_write", output_format="shell")`) and
@@ -276,7 +279,7 @@ For a dev → stage → prod flow, e.g. to try real provider data before prod:
 1. Add the `BUCKETS` entry (`config/aws/{env}.yaml`) and its project
    (`config/synapse/{env}.yaml`), with a name not used anywhere in Synapse, and merge; CI deploys
    the bucket stack, then sets up its Synapse project, including the empty `sts` shim folder.
-2. Share the project with the provider only (until `apply_project_template()` does it): edit
+2. Share the project with the provider only (until `apply_project_template()` does it):
    `edit_delete` access, or at least edit and delete access to its `sts` folder (Synapse refuses
    read-write STS credentials without DELETE).
 3. Send the provider the `contribute.py` command the setup job prints in its log, with the
